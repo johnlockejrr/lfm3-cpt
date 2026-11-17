@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lfm3-cpt"
+version = "0.1.0"
+description = "Continued pre-training (CPT) of LiquidAI LFM3 models with TRL + LoRA, with a Rich CLI, metrics and evaluation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+keywords = ["llm", "continued-pretraining", "lora", "trl", "lfm3", "rocm"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# torch is deliberately NOT pinned to a build: install the CUDA or ROCm wheel first
+# (see README), then this package. The lower bounds match the original notebook.
+dependencies = [
+  "torch>=2.9",
+  "transformers>=5.20.2",
+  "trl>=1.16.0",
+  "peft>=0.21.2",
+  "accelerate>=1.15.0",
+  "datasets>=5.1.0",
+  "huggingface-hub>=2.3.0",
+  "tokenizers>=0.23.3",
+  "safetensors>=0.8.0",
+  "click>=8.1",
+  "rich>=13.7",
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+
+[project.scripts]
+lfm3-cpt = "lfm3_cpt.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lfm3_cpt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "slow: end-to-end tests that train a tiny model on CPU (deselect with -m 'not slow')",
+]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["SIM115"]  # Rich consoles writing to throwaway files
