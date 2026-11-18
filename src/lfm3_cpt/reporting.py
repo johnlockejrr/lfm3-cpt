@@ -75,16 +75,14 @@ def summary_table(baseline: dict[str, Any] | None, final: dict[str, Any] | None,
     table.add_column("original", justify="right")
     table.add_column("fine-tuned", justify="right")
     table.add_column("Δ", justify="right")
-    for split, label in (("wiki", "perplexity, Wikipedia (held out)"), ("ood", "perplexity, web pages (OOD)")):
+    for split, label in (("wiki", "perplexity, held-out text"), ("ood", "perplexity, out-of-distribution text")):
         b, a = _ppl(baseline, split), _ppl(final, split)
         if b is None and a is None:
             continue
         table.add_row(label, _cell(b, ".2f"), _cell(a, ".2f"), _delta(b, a, ".2f", True))
     b, a = _acc(baseline), _acc(final)
     if b is not None or a is not None:
-        table.add_row(
-            "[bold]TurBLiMP grammar accuracy[/]", _cell(b, ".1%"), _cell(a, ".1%"), _delta(b, a, ".1%", False)
-        )
+        table.add_row("[bold]minimal-pair accuracy[/]", _cell(b, ".1%"), _cell(a, ".1%"), _delta(b, a, ".1%", False))
         bp = (baseline or {}).get("grammar", {}).get("by_phenomenon", {}) if baseline else {}
         ap = (final or {}).get("grammar", {}).get("by_phenomenon", {}) if final else {}
         for p in sorted(set(bp) | set(ap)):
@@ -125,7 +123,7 @@ def _get(block: dict[str, Any] | None, *keys: str) -> float | None:
 SFT_ROWS = (
     # label, path, format, lower_is_better (None: no colour)
     ("answer perplexity (held out)", ("answer", "perplexity"), ".2f", True),
-    ("answers in Turkish", ("generation", "turkish_rate"), ".1%", False),
+    ("answers in {language}", ("generation", "target_rate"), ".1%", False),
     ("answers in English", ("generation", "english_rate"), ".1%", True),
     ("answers finished (EOS)", ("generation", "finished_rate"), ".1%", False),
     ("chrF vs reference", ("generation", "chrf"), ".1f", False),
@@ -133,13 +131,32 @@ SFT_ROWS = (
 )
 
 LM_ROWS = (
-    ("perplexity, Wikipedia", ("lm", "wiki", "perplexity"), ".2f", True),
-    ("perplexity, web pages (OOD)", ("lm", "ood", "perplexity"), ".2f", True),
-    ("TurBLiMP grammar accuracy", ("lm", "grammar", "accuracy"), ".1%", False),
+    ("perplexity, held-out text", ("lm", "wiki", "perplexity"), ".2f", True),
+    ("perplexity, out-of-distribution text", ("lm", "ood", "perplexity"), ".2f", True),
+    ("minimal-pair accuracy", ("lm", "grammar", "accuracy"), ".1%", False),
 )
 
 
-def sft_summary_table(before: dict[str, Any] | None, after: dict[str, Any] | None, title: str = "SFT results") -> Table:
+def _with_target_rate(block: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Results from earlier versions only have `turkish_rate`."""
+    if not block or not isinstance(block.get("generation"), dict) or "target_rate" in block["generation"]:
+        return block
+    gen = dict(block["generation"])
+    if "turkish_rate" in gen:
+        gen["target_rate"] = gen["turkish_rate"]
+    return {**block, "generation": gen}
+
+
+def sft_summary_table(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    title: str = "SFT results",
+    language: str = "tr",
+) -> Table:
+    from .config import TARGET_LANGUAGES
+
+    before, after = _with_target_rate(before), _with_target_rate(after)
+    name = TARGET_LANGUAGES.get(language, language) or "the target language"
     table = Table(title=title, header_style="bold")
     table.add_column("metric")
     table.add_column("before SFT", justify="right")
@@ -153,5 +170,5 @@ def sft_summary_table(before: dict[str, Any] | None, after: dict[str, Any] | Non
         for label, path, spec, lower in present:
             b, a = _get(before, *path), _get(after, *path)
             delta = "" if lower is None else _delta(b, a, spec, lower)
-            table.add_row(f"  {label}", _cell(b, spec), _cell(a, spec), delta)
+            table.add_row(f"  {label.format(language=name)}", _cell(b, spec), _cell(a, spec), delta)
     return table

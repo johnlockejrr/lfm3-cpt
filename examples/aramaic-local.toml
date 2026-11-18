@@ -1,0 +1,41 @@
+# Targumic / Samaritan Aramaic: a very small target corpus, helped by related languages.
+#
+#   corpora/aramaic/targum/*.txt          the target (e.g. one book per file), upsampled x4
+#   corpora/aramaic/related/*.txt         Biblical / Jewish Babylonian Aramaic, Syriac in Hebrew letters, x2
+#   corpora/hebrew/bible/*.txt            Biblical Hebrew, x1
+#   corpora/aramaic/heldout/*.txt         whole books kept out of training for evaluation
+#
+# Text in Hebrew script, normalized to unpointed consonantal text (change strip_marks to keep vowels).
+target_language = "arc"
+data_dir = "data/arc"
+output_dir = "runs/lfm3-1.7b-cpt-arc"
+
+[data]
+train_files = [
+  "corpora/aramaic/targum/*.txt@4",
+  "corpora/aramaic/related/*.txt@2",
+  "corpora/hebrew/bible/*.txt",
+]
+eval_files = ["corpora/aramaic/heldout/*.txt"]
+doc_split = "paragraph"
+unicode_form = "NFC"
+strip_marks = ["hebrew_cantillation", "hebrew_points"]
+grammar_files = ["corpora/aramaic/pairs.tsv"]      # start from examples/aramaic-pairs.template.tsv
+
+[lora]
+train_embeddings = true
+
+[training]
+num_train_epochs = 3        # small corpus: several passes; stop when held-out perplexity stops falling
+learning_rate = 1e-4
+eval_steps = 25
+save_steps = 50
+save_total_limit = 10     # keep enough checkpoints to go back to the best one
+
+[sft]
+# Stage 2 as translation: verse-aligned Hebrew -> Aramaic pairs (see examples/sft-translation.example.jsonl)
+sft_dataset = "corpora/aramaic/sft/he-arc.jsonl"
+sft_eval_file = "corpora/aramaic/sft/he-arc.heldout.jsonl"
+sft_num_train_epochs = 3
+sft_max_new_tokens = 256
+sft_gen_samples = 200

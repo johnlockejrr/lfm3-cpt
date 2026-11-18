@@ -1,4 +1,4 @@
-"""Evaluation: token-weighted perplexity on packed text, and the TurBLiMP minimal-pair grammar test."""
+"""Evaluation: token-weighted perplexity on packed text, minimal-pair grammar tests, candidate ranking."""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def count_packed_rows(tokenizer: Any, texts: Sequence[str], max_length: int) -> 
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# TurBLiMP grammar test
+# Minimal-pair grammar test (TurBLiMP or your own pairs)
 # ---------------------------------------------------------------------------------------------------------------
 
 
@@ -210,3 +210,51 @@ def compare_grammar(pairs: Any, before: Sequence[bool], after: Sequence[bool], n
             }
         )
     return {"fixed": len(fixed), "broken": len(broken), "before": b, "after": a, "examples": examples}
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Ranking candidate restorations (lacunae, conjectures, variant readings)
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def predicted_tokens(tokenizer: Any, text: str) -> int:
+    """How many tokens of `text` the model actually predicts in `sentence_logprobs` (all of them after BOS)."""
+    n = len(tokenizer(text, add_special_tokens=False)["input_ids"])
+    return n if tokenizer.bos_token_id is not None else max(n - 1, 0)
+
+
+def rank_candidates(
+    model: torch.nn.Module,
+    tokenizer: Any,
+    text: str,
+    candidates: Sequence[str],
+    gap: str = "___",
+    batch_size: int = 32,
+    by: str = "total",
+) -> list[dict[str, Any]]:
+    """Fill the gap with each candidate and rank the full texts by log-probability under the model.
+
+    `total` is the joint log-probability of the whole text: the principled score when the candidates compete for
+    the same gap. It favours shorter fillers, so `mean` (per predicted token) is reported too; compare candidates
+    of very different lengths with care.
+    """
+    if text.count(gap) != 1:
+        raise ValueError(f"the text must contain the gap marker {gap!r} exactly once")
+    if by not in {"total", "mean"}:
+        raise ValueError("by must be 'total' or 'mean'")
+    unique = list(dict.fromkeys(c for c in candidates if c is not None))
+    if not unique:
+        raise ValueError("no candidates")
+    filled = [text.replace(gap, c) for c in unique]
+    totals = sentence_logprobs(model, tokenizer, filled, batch_size)
+    rows = []
+    for cand, full, total in zip(unique, filled, totals, strict=True):
+        n = predicted_tokens(tokenizer, full)
+        rows.append({"candidate": cand, "text": full, "logprob": total, "tokens": n, "mean_logprob": total / max(n, 1)})
+    key = "logprob" if by == "total" else "mean_logprob"
+    rows.sort(key=lambda r: r[key], reverse=True)
+    best = rows[0][key]
+    for i, r in enumerate(rows, 1):
+        r["rank"] = i
+        r["delta"] = r[key] - best
+    return rows

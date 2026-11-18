@@ -73,7 +73,7 @@ def evaluate_all(
     label: str,
     grammar: bool = True,
 ) -> dict[str, Any]:
-    """Perplexity on held-out Wikipedia and OOD web pages, plus the TurBLiMP grammar test."""
+    """Perplexity on held-out and OOD text, plus the minimal-pair grammar test."""
     eos = tokenizer.eos_token
     wiki = list(with_eos(bundle.eval, eos)["text"])
     ood = list(with_eos(bundle.ood, eos)["text"]) if len(bundle.ood) else []
@@ -89,7 +89,7 @@ def evaluate_all(
                 model, tokenizer, texts, cfg.max_length, cfg.ppl_batch_size, lambda n, t=task: progress.advance(t, n)
             ).to_dict()
         if grammar and bundle.grammar is not None:
-            task = progress.add_task(f"{label}: TurBLiMP", total=2 * len(bundle.grammar))
+            task = progress.add_task(f"{label}: minimal pairs", total=2 * len(bundle.grammar))
             result = grammar_test(
                 model, tokenizer, bundle.grammar, cfg.grammar_batch_size, lambda n: progress.advance(task, n)
             )
@@ -131,9 +131,15 @@ def run_training(
     bundle = prepare_data(cfg, tokenizer, force=force_data, loaders=loaders, log=console.print)
     stats = bundle.metadata.get("stats", {})
     console.print(
-        f"📚 train {stats.get('train_articles')} articles ({stats.get('train_tokens', 0) / 1e6:.1f}M tokens) • "
-        f"eval {stats.get('eval_articles')} • OOD {stats.get('ood_pages')} • grammar pairs {stats.get('grammar_pairs')}"
+        f"📚 {stats.get('source')}: train {stats.get('train_articles')} docs "
+        f"({stats.get('train_tokens', 0) / 1e6:.1f}M tokens) • eval {stats.get('eval_articles')} • "
+        f"OOD {stats.get('ood_pages')} • grammar pairs {stats.get('grammar_pairs')}"
     )
+    if "tokenizer_verdict" in stats:
+        console.print(
+            f"🔤 tokenizer: {stats['chars_per_token']} chars/token, {stats['tokens_per_word']} tokens/word "
+            f"({stats['tokens_per_word_vs_english']}× English) • {stats['tokenizer_verdict']}"
+        )
     hf_datasets.disable_progress_bars()  # keep the console for the dashboard
 
     with console.status("Loading model ..."):

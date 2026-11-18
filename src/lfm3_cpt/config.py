@@ -15,6 +15,18 @@ else:  # pragma: no cover
 
 DEFAULT_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "in_proj", "out_proj", "w1", "w2", "w3"]
 
+# Languages the SFT answer-language check knows (script- or stopword-based); "" disables it.
+TARGET_LANGUAGES = {
+    "tr": "Turkish",
+    "la": "Latin",
+    "he": "Hebrew",
+    "arc": "Aramaic (Hebrew script)",
+    "ar": "Arabic",
+    "syc": "Syriac",
+    "sam": "Samaritan script",
+    "": "unspecified",
+}
+
 TURBLIMP_PHENOMENA = [
     "anaphor_agreement",
     "argument_structure_ditransitive",
@@ -96,10 +108,33 @@ class Config:
     ppl_batch_size: int = 2
     run_grammar: bool = True
 
+    # --- language & local corpora ------------------------------------------------------------------------
+    # The language you are teaching. Used to pick the grammar test (TurBLiMP only for "tr") and to check that
+    # generated SFT answers are in that language: tr, la, he, arc, ar, syc, sam (or "" to skip the check).
+    target_language: str = "tr"
+    unicode_form: str = "NFC"  # NFC | NFD | NFKC | NFKD | none
+    strip_marks: list[str] = field(default_factory=list)  # e.g. hebrew_cantillation, hebrew_points (see textnorm)
+    # Setting train_files switches stage 1 from Wikipedia/FineWeb-2 to your own files (glob patterns,
+    # "pattern@N" repeats the files N times). Each file is .txt (split by doc_split) or .jsonl (text_field).
+    train_files: list[str] = field(default_factory=list)
+    eval_files: list[str] = field(default_factory=list)  # empty: hold out part of train_files
+    ood_files: list[str] = field(default_factory=list)  # optional out-of-distribution eval text
+    file_format: str = "auto"  # auto | text | jsonl
+    text_field: str = "text"
+    doc_split: str = "file"  # file | paragraph | line
+    file_min_chars: int = 0
+    eval_holdout: str = "files"  # files (whole files, recommended) | documents
+    eval_fraction: float = 0.05
+    # Minimal pairs from your own TSV/JSONL files (replaces TurBLiMP).
+    grammar_files: list[str] = field(default_factory=list)
+
     # --- stage 2 (optional): instruction tuning (SFT) on Turkish conversations ---------------------------
     # Default data: the human-written Turkish part of the Aya dataset (Apache-2.0), filtered by language code.
     sft_dataset: str = "CohereLabs/aya_dataset"
     sft_dataset_config: str | None = None
+    # sft_dataset may also be a local .jsonl/.json/.csv/.tsv/.parquet file (or glob), e.g. verse-aligned
+    # translation pairs; its eval set is then held out (sft_eval_holdout) unless sft_eval_file is given.
+    sft_eval_file: str = ""
     sft_train_split: str = "train"
     sft_eval_split: str = "test"  # "" -> hold out sft_eval_holdout of train instead
     sft_filter_column: str = "language_code"  # "" -> no filter
@@ -149,7 +184,29 @@ class Config:
     def tokens_per_step(self) -> int:
         return self.effective_batch_rows * self.max_length
 
+    @property
+    def local_corpus(self) -> bool:
+        return bool(self.train_files)
+
+    @property
+    def grammar_enabled(self) -> bool:
+        """Grammar test: your pair files if given, else TurBLiMP, which only makes sense for Turkish."""
+        return self.run_grammar and (bool(self.grammar_files) or self.target_language == "tr")
+
     def validate(self) -> None:
+        from .textnorm import validate as validate_norm
+
+        validate_norm(self.unicode_form, self.strip_marks)
+        if self.target_language not in TARGET_LANGUAGES:
+            raise ValueError(f"target_language must be one of {sorted(TARGET_LANGUAGES)}, got {self.target_language!r}")
+        if self.file_format not in {"auto", "text", "jsonl"}:
+            raise ValueError("file_format must be auto|text|jsonl")
+        if self.doc_split not in {"file", "paragraph", "line"}:
+            raise ValueError("doc_split must be file|paragraph|line")
+        if self.eval_holdout not in {"files", "documents"}:
+            raise ValueError("eval_holdout must be files|documents")
+        if not 0 < self.eval_fraction < 1:
+            raise ValueError("eval_fraction must be in (0, 1)")
         if self.precision not in {"auto", "bf16", "fp16", "fp32"}:
             raise ValueError(f"precision must be auto|bf16|fp16|fp32, got {self.precision!r}")
         for name in (

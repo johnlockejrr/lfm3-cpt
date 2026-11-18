@@ -25,6 +25,8 @@ from typing import Any
 from datasets import Dataset, load_dataset, load_from_disk
 
 from .config import Config
+from .corpus_files import expand, fingerprint
+from .textnorm import Normalizer
 
 Message = dict[str, str]
 
@@ -42,8 +44,20 @@ SFT_DATA_KEYS = (
     "sft_eval_holdout",
     "sft_system_prompt",
     "sft_max_length",
+    "sft_eval_file",
+    "unicode_form",
+    "strip_marks",
     "seed",
 )
+
+LOCAL_BUILDERS = {
+    ".jsonl": "json",
+    ".json": "json",
+    ".ndjson": "json",
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".parquet": "parquet",
+}
 
 _SHAREGPT_ROLES = {
     "human": "user",
@@ -139,9 +153,31 @@ class SftBundle:
     metadata: dict[str, Any]
 
 
+def is_local_dataset(name: str) -> bool:
+    return Path(name).expanduser().suffix.lower() in LOCAL_BUILDERS or Path(name).expanduser().exists()
+
+
+def _load_local(spec: str) -> Dataset:
+    paths = [str(s.path) for s in expand([spec])]
+    suffix = Path(paths[0]).suffix.lower()
+    builder = LOCAL_BUILDERS.get(suffix)
+    if builder is None:
+        raise ValueError(f"unsupported SFT file type {suffix!r}; use one of {sorted(LOCAL_BUILDERS)}")
+    kwargs = {"delimiter": "\t"} if suffix == ".tsv" else {}
+    return load_dataset(builder, data_files=paths, split="train", **kwargs)
+
+
 def _hub_loader(cfg: Config) -> Mapping[str, Dataset]:
+    if is_local_dataset(cfg.sft_dataset):
+        splits = {cfg.sft_train_split: _load_local(cfg.sft_dataset)}
+        if cfg.sft_eval_file:
+            splits["__eval_file__"] = _load_local(cfg.sft_eval_file)
+        return splits
     splits = [s for s in (cfg.sft_train_split, cfg.sft_eval_split) if s]
-    return {s: load_dataset(cfg.sft_dataset, cfg.sft_dataset_config, split=s) for s in splits}
+    out = {s: load_dataset(cfg.sft_dataset, cfg.sft_dataset_config, split=s) for s in splits}
+    if cfg.sft_eval_file:
+        out["__eval_file__"] = _load_local(cfg.sft_eval_file)
+    return out
 
 
 SftLoader = Callable[[Config], Mapping[str, Dataset]]
@@ -152,7 +188,14 @@ def sft_dir(cfg: Config) -> Path:
 
 
 def sft_signature(cfg: Config) -> dict[str, Any]:
-    return {k: getattr(cfg, k) for k in SFT_DATA_KEYS}
+    sig = {k: getattr(cfg, k) for k in SFT_DATA_KEYS}
+    local = [x for x in (cfg.sft_dataset, cfg.sft_eval_file) if x and is_local_dataset(x)]
+    if local:
+        try:
+            sig["files"] = fingerprint(local)
+        except FileNotFoundError:
+            sig["files"] = None
+    return sig
 
 
 def is_sft_prepared(cfg: Config) -> bool:
@@ -168,8 +211,13 @@ def _row_key(row: Mapping[str, Any]) -> str:
     return json.dumps([[m["role"], m["content"]] for m in msgs], ensure_ascii=False)
 
 
-def _convert(ds: Dataset, cfg: Config, tokenizer: Any, stats: dict[str, int]) -> list[dict[str, Any]]:
-    if cfg.sft_filter_column:
+def _convert(
+    ds: Dataset, cfg: Config, tokenizer: Any, stats: dict[str, int], log: Callable[[str], None] = print
+) -> list[dict[str, Any]]:
+    norm = Normalizer.from_config(cfg)
+    if cfg.sft_filter_column and cfg.sft_filter_column not in ds.column_names and is_local_dataset(cfg.sft_dataset):
+        log(f"[dim]No {cfg.sft_filter_column!r} column in the local SFT file: language filter skipped[/dim]")
+    elif cfg.sft_filter_column:
         if cfg.sft_filter_column not in ds.column_names:
             raise ValueError(f"filter column {cfg.sft_filter_column!r} not in {ds.column_names}")
         before = len(ds)
@@ -179,6 +227,8 @@ def _convert(ds: Dataset, cfg: Config, tokenizer: Any, stats: dict[str, int]) ->
     kwargs = template_kwargs(cfg)
     for example in ds:
         msgs = to_messages(example, cfg.sft_user_column, cfg.sft_assistant_column)
+        if msgs is not None and not norm.is_identity:
+            msgs = [{"role": m["role"], "content": norm(m["content"])} for m in msgs]
         if msgs is None:
             stats["unusable"] += 1
             continue
@@ -212,14 +262,18 @@ def prepare_sft_data(
     log(f"Loading {cfg.sft_dataset}" + (f" [{cfg.sft_dataset_config}]" if cfg.sft_dataset_config else "") + " ...")
     splits = (loader or _hub_loader)(cfg)
     stats = {"filtered_out": 0, "unusable": 0, "duplicates": 0, "too_long": 0}
-    train_rows = _convert(splits[cfg.sft_train_split], cfg, tokenizer, stats)
+    train_rows = _convert(splits[cfg.sft_train_split], cfg, tokenizer, stats, log)
     train = Dataset.from_list(train_rows).shuffle(seed=cfg.seed) if train_rows else None
     if train is None:
         raise RuntimeError(f"no usable SFT examples in {cfg.sft_dataset}:{cfg.sft_train_split} ({stats})")
-    if cfg.sft_eval_split:
-        eval_ds = Dataset.from_list(_convert(splits[cfg.sft_eval_split], cfg, tokenizer, stats))
+    if "__eval_file__" in splits:
+        eval_ds = Dataset.from_list(_convert(splits["__eval_file__"], cfg, tokenizer, stats, log))
+    elif cfg.sft_eval_split and cfg.sft_eval_split in splits:
+        eval_ds = Dataset.from_list(_convert(splits[cfg.sft_eval_split], cfg, tokenizer, stats, log))
     else:
-        n_eval = max(1, int(len(train) * cfg.sft_eval_holdout))
+        if cfg.sft_eval_split and not is_local_dataset(cfg.sft_dataset):
+            raise ValueError(f"split {cfg.sft_eval_split!r} not loaded")
+        n_eval = max(1, int(len(train) * (cfg.sft_eval_holdout or 0.05)))
         eval_ds, train = train.select(range(n_eval)), train.select(range(n_eval, len(train)))
     # Never evaluate on a training example (a separate test split could overlap with train).
     train_keys = {_row_key(r) for r in train}

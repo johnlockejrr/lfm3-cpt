@@ -90,7 +90,7 @@ def test_sft_cli(cpt_then_sft, tmp_path):
     # report shows both stages for a run directory
     res = runner.invoke(cli, ["report", str(run)])
     assert res.exit_code == 0, res.output
-    assert "TurBLiMP grammar accuracy" in res.output and "answers in Turkish" in res.output
+    assert "minimal-pair accuracy" in res.output and "answers in Turkish" in res.output
 
     # control experiment from the CLI: SFT on the original model, cached SFT data, no LM eval
     other = tmp_path / "sft-only"

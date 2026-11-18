@@ -96,7 +96,7 @@ def test_cli_on_trained_run(trained_run, tmp_path):
 
     res = runner.invoke(cli, ["report", str(out)])
     assert res.exit_code == 0, res.output
-    assert "TurBLiMP grammar accuracy" in res.output
+    assert "minimal-pair accuracy" in res.output
 
     json_out = tmp_path / "eval.json"
     res = runner.invoke(cli, [*_base_args(cfg), "evaluate", str(out / "adapter"), "--json-out", str(json_out)])

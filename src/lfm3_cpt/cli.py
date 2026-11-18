@@ -107,12 +107,15 @@ def show_config(obj: Ctx, as_toml: bool) -> None:
 @click.option("--train-articles", type=int)
 @click.option("--eval-articles", type=int)
 @click.option("--ood-pages", type=int)
-@click.option("--no-grammar", is_flag=True, help="Skip downloading TurBLiMP.")
+@click.option("--no-grammar", is_flag=True, help="No grammar test (TurBLiMP / grammar_files).")
 @click.option("--force", is_flag=True, help="Re-download even if a matching cache exists.")
 @click.option("--sft", "with_sft", is_flag=True, help="Also prepare the stage-2 (SFT) conversations.")
 @pass_ctx
 def prepare(obj: Ctx, data_dir, train_articles, eval_articles, ood_pages, no_grammar, force, with_sft) -> None:
-    """Stream the corpora from the Hub and cache them on disk (train/eval/ood/grammar [+ sft])."""
+    """Prepare and cache stage-1 data (Hub or your train_files), minimal pairs [+ SFT conversations].
+
+    Also reports how well the tokenizer covers the training text.
+    """
     from .data import prepare_data
     from .modeling import load_tokenizer
     from .sft_data import prepare_sft_data
@@ -130,6 +133,11 @@ def prepare(obj: Ctx, data_dir, train_articles, eval_articles, ood_pages, no_gra
     for key, value in bundle.metadata.get("stats", {}).items():
         table.add_row(key, f"{value:,}" if isinstance(value, int) else str(value))
     console.print(table)
+    corpus = bundle.metadata.get("corpus") or {}
+    if corpus.get("eval_source"):
+        console.print(f"🧪 evaluation text: {corpus['eval_source']}")
+        for path in corpus.get("eval_files", []):
+            console.print(f"   held out: {path}", highlight=False)
     console.print(f"\n📝 Sample:\n{bundle.train[0]['text'][:500]}")
     if with_sft:
         sft = prepare_sft_data(cfg, tokenizer, force=force, log=console.print)
@@ -161,7 +169,7 @@ def prepare(obj: Ctx, data_dir, train_articles, eval_articles, ood_pages, no_gra
 @click.option("--gate-proj/--no-gate-proj", "lora_gate_proj", default=None, help="Also adapt LFM3's attention gate.")
 @click.option("--train-embeddings/--no-train-embeddings", default=None, help="Fully train the input embeddings.")
 @click.option("--gradient-checkpointing/--no-gradient-checkpointing", default=None)
-@click.option("--grammar/--no-grammar", "run_grammar", default=None, help="Run the TurBLiMP grammar test.")
+@click.option("--grammar/--no-grammar", "run_grammar", default=None, help="Run the minimal-pair grammar test.")
 @click.option("--skip-baseline", is_flag=True, help="Do not evaluate the model before training.")
 @click.option("--resume", is_flag=True, help="Resume from the last checkpoint in OUTPUT_DIR/checkpoints.")
 @click.option("--merge", is_flag=True, help="Merge the adapter into a bf16 standalone model at the end.")
@@ -219,7 +227,7 @@ def train(obj: Ctx, skip_baseline, resume, merge, force_data, then_sft, **opts) 
     "--lm-eval/--no-lm-eval",
     default=True,
     show_default=True,
-    help="Also re-check Wikipedia/web perplexity and TurBLiMP (forgetting).",
+    help="Also re-check stage-1 perplexity and minimal pairs (forgetting).",
 )
 @click.option("--skip-baseline", is_flag=True)
 @click.option("--resume", is_flag=True)
@@ -227,7 +235,7 @@ def train(obj: Ctx, skip_baseline, resume, merge, force_data, then_sft, **opts) 
 @click.option("--force-data", is_flag=True)
 @pass_ctx
 def sft(obj: Ctx, start, filter_, lm_eval, skip_baseline, resume, merge, force_data, **opts) -> None:
-    """Stage 2 (optional): instruction-tune the CPT model on Turkish conversations.
+    """Stage 2 (optional): instruction-tune the CPT model (Turkish conversations by default).
 
     \b
     Examples:
@@ -269,7 +277,7 @@ def sft(obj: Ctx, start, filter_, lm_eval, skip_baseline, resume, merge, force_d
 @click.option("--json-out", type=click.Path(dir_okay=False), help="Write the metrics as JSON.")
 @pass_ctx
 def evaluate(obj: Ctx, model_path, adapter, run_grammar, json_out) -> None:
-    """Perplexity (Wikipedia + OOD) and TurBLiMP accuracy of a base, adapter or merged model.
+    """Held-out / OOD perplexity and minimal-pair accuracy of a base, adapter or merged model.
 
     MODEL_PATH defaults to the configured base model; it may also be an adapter directory.
     """
@@ -340,7 +348,10 @@ def merge(obj: Ctx, adapter_dir, output_dir, base_model, dtype, device, push_to_
 @click.option("--repetition-penalty", type=float, default=1.05)
 @pass_ctx
 def generate(obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, temperature, repetition_penalty) -> None:
-    """Quick qualitative check: continue Turkish text with a base, adapter or merged model."""
+    """Quick qualitative check: continue text with a base, adapter or merged model.
+
+    Without --prompt, two Turkish prompts are used (target_language=tr); other languages need --prompt.
+    """
     import torch
 
     from .device import detect, resolve_precision, torch_dtype
@@ -354,7 +365,13 @@ def generate(obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, tempe
         model, tokenizer = load_for_inference(
             target, torch_dtype(resolve_precision(cfg.precision, info)), adapter, device_map, cfg.trust_remote_code
         )
-    prompts = prompts or ("İstanbul, Türkiye'nin", "Osmanlı İmparatorluğu'nun kuruluşu")
+    if not prompts:
+        if cfg.target_language != "tr":
+            raise click.UsageError("give at least one --prompt in your language")
+        prompts = ("İstanbul, Türkiye'nin", "Osmanlı İmparatorluğu'nun kuruluşu")
+    from .textnorm import Normalizer
+
+    prompts = tuple(Normalizer.from_config(cfg)(p) for p in prompts)
     device = model.get_input_embeddings().weight.device
     for prompt in prompts:
         if chat:
@@ -416,9 +433,178 @@ def _report_one(name: str, results: dict[str, Any]) -> None:
     if results.get("grammar_comparison"):
         print_flip_examples(console, results["grammar_comparison"])
     if results.get("stage") == "sft":
-        console.print(sft_summary_table(results.get("baseline"), results.get("final")))
+        language = (results.get("config") or {}).get("target_language", "tr")
+        console.print(sft_summary_table(results.get("baseline"), results.get("final"), language=language))
     else:
         console.print(summary_table(results.get("baseline"), results.get("final")))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+@cli.command("tokenizer-check")
+@click.argument("files", nargs=-1)
+@click.option("--text", "texts", multiple=True, help="Text to measure (repeatable), instead of files.")
+@click.option("--model", "model_path", help="Tokenizer to check (default: the configured model).")
+@click.option("--examples", type=int, default=6, show_default=True, help="Words to show split into tokens.")
+@pass_ctx
+def tokenizer_check(obj: Ctx, files, texts, model_path, examples) -> None:
+    """How well the tokenizer covers your language (compared with English). Run it before training.
+
+    FILES are glob patterns (.txt / .jsonl, like train_files). Without FILES or --text, the configured
+    train_files, or else the cached training data, is measured. Normalization settings apply.
+    """
+    from .corpus_files import expand, read_documents
+    from .data import is_prepared, load_data
+    from .modeling import load_tokenizer
+    from .textnorm import Normalizer
+    from .tokcheck import tokenizer_report
+
+    cfg = obj.config()
+    norm = Normalizer.from_config(cfg)
+    if texts:
+        docs = list(texts)
+    elif files or cfg.train_files:
+        try:
+            docs = [d for spec in expand(list(files) or cfg.train_files) for d in read_documents(spec.path, cfg)]
+        except (FileNotFoundError, ValueError) as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif is_prepared(cfg):
+        docs = list(load_data(cfg).train["text"])
+    else:
+        raise click.UsageError("give FILES or --text, set train_files, or run `prepare` first")
+    docs = [norm(d) for d in docs if d.strip()]
+    if not docs:
+        raise click.ClickException("no text to measure")
+    tokenizer = load_tokenizer(model_path or cfg.model_id, cfg.trust_remote_code)
+    report = tokenizer_report(tokenizer, docs)
+    table = Table(title=f"Tokenizer: {model_path or cfg.model_id}", header_style="bold")
+    table.add_column("")
+    table.add_column("your text", justify="right")
+    table.add_column("English reference", justify="right")
+    t, e = report["target"], report["english"]
+    table.add_row("words measured", f"{t['words']:,}", f"{e['words']:,}")
+    table.add_row("tokens per word", f"{t['tokens_per_word']:.2f}", f"{e['tokens_per_word']:.2f}")
+    table.add_row("characters per token", f"{t['chars_per_token']:.2f}", f"{e['chars_per_token']:.2f}")
+    table.add_row("unknown-token rate", f"{t['unk_rate']:.2%}", f"{e['unk_rate']:.2%}")
+    console.print(table)
+    console.print(
+        f"tokens per word vs English: [bold]{report['tokens_per_word_vs_english']:.2f}×[/] • "
+        f"verdict: [bold]{report['verdict']}[/]"
+    )
+    words = list(dict.fromkeys(w for d in docs[:50] for w in d.split() if len(w) > 3))[:examples]
+    for w in words:
+        pieces = [tokenizer.decode([i]) for i in tokenizer(w, add_special_tokens=False)["input_ids"]]
+        console.print(f"  {w} → {pieces}", highlight=False)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+def default_lm_model(cfg: Config) -> str:
+    run = Path(cfg.output_dir)
+    for candidate in (run / "merged", run / "adapter"):
+        if (candidate / "config.json").exists() or (candidate / "adapter_config.json").exists():
+            return str(candidate)
+    return cfg.model_id
+
+
+@cli.command()
+@click.argument("model_path", required=False)
+@click.option("--text", help="Text with the gap marker, e.g. 'arma virumque ___ Troiae'.")
+@click.option("--candidate", "candidates", multiple=True, help="A possible filler (repeatable).")
+@click.option("--candidates-file", type=click.Path(exists=True, dir_okay=False), help="One candidate per line.")
+@click.option(
+    "--input",
+    "input_file",
+    type=click.Path(exists=True, dir_okay=False),
+    help='JSONL batch: {"id": ..., "text": "...___...", "candidates": [...]} per line.',
+)
+@click.option("--output", type=click.Path(dir_okay=False), help="Write ranked results as JSONL.")
+@click.option("--gap", default="___", show_default=True, help="Gap marker in the text.")
+@click.option(
+    "--by",
+    type=click.Choice(["total", "mean"]),
+    default="total",
+    show_default=True,
+    help="Sort by total log-probability, or per token.",
+)
+@click.option("--top", type=int, default=20, show_default=True, help="Rows to print per text.")
+@click.option("--batch-size", type=int, default=32, show_default=True)
+@pass_ctx
+def rank(obj: Ctx, model_path, text, candidates, candidates_file, input_file, output, gap, by, top, batch_size) -> None:
+    """Rank candidate restorations of a gap (lacuna, conjecture, variant reading) by model probability.
+
+    MODEL_PATH defaults to this run's CPT model (merged, else adapter), else the base model. Text and candidates
+    get the same normalization as the training data.
+    """
+    from .device import detect, resolve_precision, torch_dtype
+    from .evaluation import rank_candidates
+    from .modeling import load_for_inference
+    from .textnorm import Normalizer
+
+    cfg = obj.config()
+    norm = Normalizer.from_config(cfg)
+    jobs: list[dict[str, Any]] = []
+    if input_file:
+        for n, line in enumerate(Path(input_file).read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip():
+                rec = json.loads(line)
+                jobs.append({"id": rec.get("id", n), "text": rec["text"], "candidates": rec["candidates"]})
+    else:
+        cands = list(candidates)
+        if candidates_file:
+            cands += [c.strip() for c in Path(candidates_file).read_text(encoding="utf-8").splitlines() if c.strip()]
+        if not text or not cands:
+            raise click.UsageError("give --text and candidates (--candidate / --candidates-file), or --input")
+        jobs.append({"id": 1, "text": text, "candidates": cands})
+
+    info = detect()
+    target = model_path or default_lm_model(cfg)
+    device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    with console.status(f"Loading {target} ..."):
+        model, tokenizer = load_for_inference(
+            target, torch_dtype(resolve_precision(cfg.precision, info)), None, device_map, cfg.trust_remote_code
+        )
+    console.print(f"🧮 scoring with {target}", highlight=False)
+    out_fh = open(output, "w", encoding="utf-8") if output else None  # noqa: SIM115
+    try:
+        for job in jobs:
+            try:
+                rows = rank_candidates(
+                    model, tokenizer, norm(job["text"]), [norm(c) for c in job["candidates"]], gap, batch_size, by
+                )
+            except ValueError as exc:
+                raise click.ClickException(f"{job['id']}: {exc}") from exc
+            table = Table(title=f"{job['id']}: {job['text']}", header_style="bold", title_justify="left")
+            for col, justify in (
+                ("#", "right"),
+                ("candidate", "left"),
+                ("log p", "right"),
+                ("per token", "right"),
+                ("tokens", "right"),
+                ("Δ", "right"),
+            ):
+                table.add_column(col, justify=justify)
+            for r in rows[:top]:
+                table.add_row(
+                    str(r["rank"]),
+                    r["candidate"],
+                    f"{r['logprob']:.2f}",
+                    f"{r['mean_logprob']:.3f}",
+                    str(r["tokens"]),
+                    f"{r['delta']:.2f}",
+                )
+            console.print(table, highlight=False)
+            if out_fh:
+                out_fh.write(
+                    json.dumps(
+                        {"id": job["id"], "text": job["text"], "model": target, "by": by, "ranking": rows},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+    finally:
+        if out_fh:
+            out_fh.close()
+    if output:
+        console.print(f"📝 {output}")
 
 
 # ---------------------------------------------------------------------------------------------------------------

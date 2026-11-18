@@ -1,0 +1,6 @@
+# Template for your own Aramaic minimal pairs (TSV, UTF-8). Replace these comment lines with real pairs:
+#   grammatical sentence<TAB>ungrammatical sentence<TAB>phenomenon
+# Ideas for phenomena: gender/number agreement, state (absolute/emphatic/construct), verbal stem
+# morphology, pronominal suffixes, word order with the object marker. Write the pairs in the same
+# orthography (pointed or unpointed) as your corpus; the configured normalization is applied to both.
+sentence_good	sentence_bad	phenomenon

@@ -11,6 +11,19 @@ training. At the end the adapter is merged into a standalone checkpoint.
 An optional **second stage** then instruction-tunes the CPT model on Turkish conversations (SFT), so it not only
 knows more Turkish but also answers in it. See [Stage 2](#stage-2-optional-turkish-instruction-tuning-sft).
 
+**Other languages and periods.** Turkish is the default, not a limit. Stage 1 can train on your own text files
+instead of Wikipedia, with:
+- whole-file evaluation holdout and weighted mixing of related languages
+- Unicode normalization and stripping of niqqud, cantillation, harakat or macrons
+- a grammar test from your own minimal pairs
+- a tokenizer coverage check
+- a `rank` command that scores candidate restorations of a lacuna
+
+Worked setups for Modern Hebrew, Classical Latin and Targumic/Samaritan Aramaic are in
+[docs/LANGUAGES.md](docs/LANGUAGES.md) and `examples/`.
+
+**→ [QUICKSTART.md](QUICKSTART.md) has the exact commands for every case.**
+
 ## Install
 
 Install PyTorch for your GPU **first**, then this package (torch is not pinned to a build in `pyproject.toml`).
@@ -52,13 +65,15 @@ On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 |---|---|
 | `info` | CUDA/ROCm detection, memory, bf16/TF32, library versions, suggested profile |
 | `show-config [--toml]` | resolved config; `--toml` output can be saved and passed back with `-c` |
-| `prepare [--sft]` | streams Wikipedia / FineWeb-2 / TurBLiMP (and the SFT conversations) and caches them |
+| `prepare [--sft]` | prepares and caches stage-1 data (Hub or your files), minimal pairs, SFT data; checks the tokenizer |
 | `train` | full pipeline with live dashboard; `--resume`, `--merge`, `--sft`, `--skip-baseline`, `--max-steps`, … |
-| `evaluate [MODEL]` | perplexity + TurBLiMP for a base model, an adapter dir or a merged model; `--json-out` |
+| `evaluate [MODEL]` | held-out/OOD perplexity + minimal pairs for a base, adapter or merged model; `--json-out` |
 | `merge ADAPTER` | exact merge into a fresh bf16 base (CPU by default); `--push-to-hub REPO` |
-| `generate [MODEL]` | continue Turkish prompts for a qualitative check; `--chat` uses the chat template |
+| `generate [MODEL]` | continue prompts (`--prompt`) for a qualitative check; `--chat` uses the chat template |
 | `sft` | stage 2: Turkish instruction tuning on top of the CPT model (or `--from base` / a path) |
 | `chat [MODEL]` | interactive multi-turn chat; defaults to the run's SFT model, else its CPT model |
+| `tokenizer-check [FILES]` | how well the tokenizer covers your text, compared with English, with a recommendation |
+| `rank [MODEL]` | rank candidate fillers of a gap (`___`) by model probability: lacunae, conjectures, variants |
 | `report RUN…` | summary of one or several finished runs (both stages for a run directory) |
 
 Every config key can be set from any level: `defaults < --profile < -c file.toml < --set key=value < command options`.
@@ -181,4 +196,6 @@ pytest -m "not slow"   # skip the end-to-end training/CLI tests
 The end-to-end tests run the real pipeline: prepare, baseline, a few LoRA steps, checkpoints, resume, final eval,
 merge, and then the `evaluate`/`merge`/`generate`/`report` commands on the result. The stage-2 tests run CPT
 without merging, then SFT from the CPT adapter (exercising the automatic merge), resume, the `--from base`
-control, `report`, `chat` and merging the SFT adapter.
+control, `report`, `chat` and merging the SFT adapter. The language tests cover normalization, local corpora
+(holdout, upsampling, cache invalidation), minimal-pair files, the tokenizer check, answer-language detection,
+local SFT files, and a full local-corpus run followed by `tokenizer-check`, `rank`, `generate` and `evaluate`.

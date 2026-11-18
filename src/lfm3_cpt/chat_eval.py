@@ -2,7 +2,8 @@
 
 - answer perplexity: NLL of the reference answer given the conversation, on the answer tokens only (the SFT loss,
   token-weighted over the whole eval set)
-- Turkish response rate: share of generated answers detected as Turkish (catches drifting into English)
+- target-language rate: share of generated answers in `target_language` (catches drifting into English);
+  Turkish and Latin by stopwords, Hebrew/Aramaic, Arabic, Syriac and Samaritan by script
 - finished rate: share of answers that end with EOS before the token limit (catches rambling / loops)
 - chrF vs the reference answer: a rough, reference-based similarity; free-form answers can be good and still
   score low, so read it as a trend, not a grade
@@ -162,6 +163,96 @@ def detect_language(text: str) -> str:
     if tr == 0 and en == 0:
         return "other"
     return "tr" if tr > en else "en"
+
+
+LA_WORDS = frozenset(
+    [
+        "et",
+        "in",
+        "est",
+        "non",
+        "ad",
+        "cum",
+        "ut",
+        "quod",
+        "sed",
+        "qui",
+        "quae",
+        "quam",
+        "de",
+        "ex",
+        "si",
+        "enim",
+        "esse",
+        "sunt",
+        "autem",
+        "per",
+        "nec",
+        "atque",
+        "etiam",
+        "eius",
+        "hoc",
+        "haec",
+        "ab",
+        "neque",
+        "tamen",
+        "ita",
+        "quoque",
+        "iam",
+        "inter",
+        "post",
+        "ubi",
+        "ille",
+        "illa",
+        "ipse",
+        "nos",
+        "vos",
+        "sic",
+        "nunc",
+        "erat",
+        "fuit",
+    ]
+)
+# Letters of each script (Hebrew-script Aramaic is checked like Hebrew).
+_SCRIPTS = {
+    "he": ((0x0590, 0x05FF), (0xFB1D, 0xFB4F)),
+    "ar": ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)),
+    "syc": ((0x0700, 0x074F),),
+    "sam": ((0x0800, 0x083F),),
+}
+_SCRIPTS["arc"] = _SCRIPTS["he"]
+
+
+def script_share(text: str, ranges: tuple[tuple[int, int], ...]) -> float:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(any(lo <= ord(ch) <= hi for lo, hi in ranges) for ch in letters) / len(letters)
+
+
+def in_target_language(text: str, target: str) -> bool | None:
+    """Whether `text` is in the target language; None when there is no check for it."""
+    if not target:
+        return None
+    if target == "tr":
+        return detect_language(text) == "tr"
+    if target == "la":
+        words = _WORD.findall(text.lower())
+        la, en = sum(w in LA_WORDS for w in words), sum(w in EN_WORDS for w in words)
+        return la > 0 and la >= en
+    if target in _SCRIPTS:
+        return script_share(text, _SCRIPTS[target]) >= 0.5
+    return None
+
+
+def answer_language(text: str, target: str) -> str:
+    """Label for one answer: the target code if it is in the target language, else en / other / empty / tr."""
+    if not text.strip():
+        return "empty"
+    if in_target_language(text, target):
+        return target
+    lang = detect_language(text)
+    return lang if lang != "tr" or target != "tr" else "other"
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -329,12 +420,18 @@ def generate_answers(
     return results
 
 
-def summarize_generations(answers: Sequence[dict[str, Any]], references: Sequence[str]) -> dict[str, Any]:
+def summarize_generations(
+    answers: Sequence[dict[str, Any]], references: Sequence[str], target: str = "tr"
+) -> dict[str, Any]:
     n = len(answers)
-    langs = [detect_language(a["text"]) for a in answers]
+    langs = [answer_language(a["text"], target) for a in answers]
+    out: dict[str, Any] = {"n": n, "target_language": target}
+    if target:
+        out["target_rate"] = langs.count(target) / n if n else float("nan")
+    if target == "tr":
+        out["turkish_rate"] = out["target_rate"]  # name used by earlier versions
     return {
-        "n": n,
-        "turkish_rate": langs.count("tr") / n if n else float("nan"),
+        **out,
         "english_rate": langs.count("en") / n if n else float("nan"),
         "finished_rate": sum(a["finished"] for a in answers) / n if n else float("nan"),
         "empty_rate": langs.count("empty") / n if n else float("nan"),

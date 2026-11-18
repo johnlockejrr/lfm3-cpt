@@ -1,0 +1,21 @@
+# Smoke test on three tiny public-domain Latin passages (Caesar, Cicero, Vergil). Proves the local-corpus
+# pipeline works on your machine in a few minutes; the numbers mean nothing with this little text.
+#   lfm3-cpt -p rtx3090 -c examples/latin-sample.toml prepare
+target_language = "la"
+data_dir = "data/latin-sample"
+output_dir = "runs/latin-sample"
+
+[data]
+train_files = ["examples/latin-sample/*.txt@20"]   # tiny corpus: repeat it so a few rows exist
+doc_split = "paragraph"
+eval_holdout = "files"
+eval_fraction = 0.34                                # one of the three files is held out
+strip_marks = ["latin_macrons"]
+grammar_files = ["examples/latin-pairs.tsv"]
+
+[training]
+max_length = 256
+max_steps = 10
+logging_steps = 1
+eval_steps = 5
+save_steps = 10

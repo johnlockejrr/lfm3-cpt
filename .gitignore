@@ -47,3 +47,4 @@ wandb/
 *.swp
 .DS_Store
 EOF
+corpora/

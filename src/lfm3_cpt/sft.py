@@ -1,4 +1,4 @@
-"""Stage 2 (optional): a short SFT pass on Turkish conversations, on top of the CPT model.
+"""Stage 2 (optional): a short SFT pass (Turkish conversations by default) on top of the CPT model.
 
 CPT teaches the language; SFT teaches the model to *answer* in it. The stage:
 
@@ -166,7 +166,9 @@ def evaluate_chat(
                 cfg.sft_repetition_penalty,
                 lambda n: progress.advance(task, n),
             )
-            out["generation"] = summarize_generations(answers, [r["completion"][0]["content"] for r in gen_rows])
+            out["generation"] = summarize_generations(
+                answers, [r["completion"][0]["content"] for r in gen_rows], cfg.target_language
+            )
             out["answers"] = answers
     if lm_eval and is_prepared(cfg):
         from .train import evaluate_all  # stage-1 metrics: did SFT undo what CPT taught?
@@ -283,7 +285,7 @@ def run_sft(
         before = evaluate_chat(model, tokenizer, bundle, cfg, console, "before", lm_eval)
         baseline_path.write_text(json.dumps({"key": key, "results": before}, indent=2, ensure_ascii=False))
     if before:
-        console.print(sft_summary_table(before, None, title="Before SFT"))
+        console.print(sft_summary_table(before, None, title="Before SFT", language=cfg.target_language))
 
     peft_config = build_lora_config(stage, model, warn=console.print)
     trainer = SFTTrainer(
@@ -343,7 +345,7 @@ def run_sft(
             "total_params": total,
         },
     }
-    console.print(sft_summary_table(results["baseline"], results["final"]))
+    console.print(sft_summary_table(results["baseline"], results["final"], language=cfg.target_language))
     (out_dir / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
     console.print(f"📝 Results: {out_dir / 'results.json'} • answers: {out_dir / 'generations.jsonl'}")
 

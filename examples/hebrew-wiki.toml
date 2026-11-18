@@ -1,0 +1,16 @@
+# Modern Hebrew from Wikipedia, with FineWeb-2 Hebrew web pages as out-of-distribution text.
+target_language = "he"
+data_dir = "data/he"
+output_dir = "runs/lfm3-1.7b-cpt-he"
+
+[data]
+wiki_config = "20231101.he"
+ood_config = "heb_Hebr"
+train_articles = 3000
+# No TurBLiMP for Hebrew: add your own pairs with grammar_files to get a grammar test.
+
+[lora]
+train_embeddings = true    # check `lfm3-cpt tokenizer-check` first; Hebrew script coverage decides this
+
+[training]
+learning_rate = 1e-4       # lower than the Turkish default because the full embedding matrix is trained

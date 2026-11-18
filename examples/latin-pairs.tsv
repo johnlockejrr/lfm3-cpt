@@ -1,0 +1,12 @@
+# Classical Latin minimal pairs: grammatical<TAB>ungrammatical<TAB>phenomenon
+# A pair passes when the model gives the grammatical sentence the higher probability.
+# Keep the two sentences identical except for the one feature being tested.
+sentence_good	sentence_bad	phenomenon
+puella bona cantat	puella bonus cantat	adjective_agreement
+milites fortes pugnant	milites fortis pugnant	adjective_agreement
+rosae pulchrae sunt	rosae pulchrae est	subject_verb_agreement
+pueri currunt	pueri currit	subject_verb_agreement
+Marcus librum legit	Marcus liber legit	object_case
+in urbe habitat	in urbs habitat	preposition_case
+ad forum ambulamus	ad foro ambulamus	preposition_case
+cum amicis venit	cum amici venit	preposition_case

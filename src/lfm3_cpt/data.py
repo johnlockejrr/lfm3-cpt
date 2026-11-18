@@ -1,4 +1,11 @@
-"""Corpus preparation: stream Turkish Wikipedia, FineWeb-2 web pages and TurBLiMP, cache them on disk.
+"""Corpus preparation, cached on disk.
+
+Two sources for stage 1:
+- the Hub (default): Wikipedia in `wiki_config`'s language, FineWeb-2 web pages as out-of-distribution text;
+- your own files (`train_files`, see `corpus_files`), for languages and periods the Hub does not cover.
+
+Grammar pairs come from `grammar_files` if given, else TurBLiMP when the target language is Turkish.
+All text goes through the same normalization (`unicode_form`, `strip_marks`).
 
 Texts are stored *without* the end-of-sequence token; `with_eos` adds the tokenizer's EOS at use time, so the
 cache does not depend on a particular tokenizer.
@@ -8,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import shutil
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -17,6 +25,9 @@ from typing import Any
 from datasets import Dataset, concatenate_datasets, load_dataset, load_from_disk
 
 from .config import Config
+from .corpus_files import fingerprint, load_local_corpus, load_pair_files
+from .textnorm import Normalizer
+from .tokcheck import tokenizer_report
 
 SPLITS = ("train", "eval", "ood", "grammar")
 METADATA = "metadata.json"
@@ -37,6 +48,19 @@ DATA_KEYS = (
     "grammar_pairs_per_phenomenon",
     "phenomena",
     "seed",
+    "target_language",
+    "unicode_form",
+    "strip_marks",
+    "train_files",
+    "eval_files",
+    "ood_files",
+    "file_format",
+    "text_field",
+    "doc_split",
+    "file_min_chars",
+    "eval_holdout",
+    "eval_fraction",
+    "grammar_files",
 )
 
 
@@ -112,18 +136,25 @@ class Loaders:
 
 
 def data_signature(cfg: Config) -> dict[str, Any]:
-    return {k: getattr(cfg, k) for k in DATA_KEYS}
+    sig = {k: getattr(cfg, k) for k in DATA_KEYS}
+    files = cfg.train_files + cfg.eval_files + cfg.ood_files + cfg.grammar_files
+    if files:
+        try:
+            sig["files"] = fingerprint(files)
+        except FileNotFoundError:
+            sig["files"] = None  # cannot match a cache; prepare_data will raise a clear error
+    return sig
 
 
 def is_prepared(cfg: Config) -> bool:
     root = Path(cfg.data_dir)
     meta = root / METADATA
-    if not meta.exists() or not all((root / s).exists() for s in ("train", "eval", "ood")):
+    if not meta.exists() or not all((root / s).exists() for s in ("train", "eval")):
         return False
     stored = json.loads(meta.read_text())
     sig = data_signature(cfg)
     # Grammar pairs are optional: a cache without them is still valid when grammar is disabled.
-    if cfg.run_grammar and not (root / "grammar").exists():
+    if cfg.grammar_enabled and not (root / "grammar").exists():
         return False
     return stored.get("signature") == sig
 
@@ -152,26 +183,51 @@ def prepare_data(
     root.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
-    log(f"Streaming {cfg.wiki_dataset} [{cfg.wiki_config}] ...")
-    eval_texts, train_texts = select_articles(loaders.wiki(cfg), cfg.min_chars, cfg.eval_articles, cfg.train_articles)
-    ood_texts: list[str] = []
-    if cfg.ood_pages:
-        log(f"Streaming {cfg.ood_dataset} [{cfg.ood_config}/{cfg.ood_split}] ...")
-        ood_texts = select_pages(loaders.ood(cfg), cfg.ood_pages)
+    extra: dict[str, Any] = {}
+    if cfg.local_corpus:
+        log(f"Reading local corpus ({len(cfg.train_files)} pattern(s)) ...")
+        corpus = load_local_corpus(cfg, log)
+        train_texts, eval_texts, ood_texts = corpus.train, corpus.eval, corpus.ood
+        extra = corpus.info
+    else:
+        norm = Normalizer.from_config(cfg)
+        log(f"Streaming {cfg.wiki_dataset} [{cfg.wiki_config}] ...")
+        eval_texts, train_texts = select_articles(
+            loaders.wiki(cfg), cfg.min_chars, cfg.eval_articles, cfg.train_articles
+        )
+        ood_texts = []
+        if cfg.ood_pages:
+            log(f"Streaming {cfg.ood_dataset} [{cfg.ood_config}/{cfg.ood_split}] ...")
+            ood_texts = select_pages(loaders.ood(cfg), cfg.ood_pages)
+        if not norm.is_identity:
+            train_texts, eval_texts, ood_texts = ([norm(t) for t in xs] for xs in (train_texts, eval_texts, ood_texts))
 
     datasets = {
         "train": Dataset.from_dict({"text": train_texts}),
         "eval": Dataset.from_dict({"text": eval_texts}),
         "ood": Dataset.from_dict({"text": ood_texts}),
     }
-    if cfg.run_grammar:
-        log(f"Loading {cfg.grammar_dataset} ({len(cfg.phenomena)} phenomena) ...")
-        datasets["grammar"] = loaders.grammar(cfg)
+    if cfg.grammar_enabled:
+        if cfg.grammar_files:
+            log(f"Reading minimal pairs from {len(cfg.grammar_files)} pattern(s) ...")
+            datasets["grammar"] = load_pair_files(cfg)
+        else:
+            log(f"Loading {cfg.grammar_dataset} ({len(cfg.phenomena)} phenomena) ...")
+            datasets["grammar"] = loaders.grammar(cfg)
+    elif cfg.run_grammar:
+        log(f"[dim]No grammar test for target_language={cfg.target_language!r} (add grammar_files for one)[/dim]")
 
+    # Empty splits are not saved (an empty Arrow dataset cannot be reloaded), and a split from an earlier
+    # preparation must not survive (e.g. TurBLiMP after switching language).
+    for name in SPLITS:
+        if (name not in datasets or len(datasets[name]) == 0) and (root / name).exists():
+            shutil.rmtree(root / name)
     for name, ds in datasets.items():
-        ds.save_to_disk(str(root / name))
+        if len(ds):
+            ds.save_to_disk(str(root / name))
 
     stats: dict[str, Any] = {
+        "source": "local files" if cfg.local_corpus else f"{cfg.wiki_dataset}:{cfg.wiki_config}",
         "train_articles": len(train_texts),
         "eval_articles": len(eval_texts),
         "ood_pages": len(ood_texts),
@@ -183,7 +239,17 @@ def prepare_data(
         stats["eval_tokens"] = count_tokens(tokenizer, eval_texts)
         stats["ood_tokens"] = count_tokens(tokenizer, ood_texts) if ood_texts else 0
         stats["tokenizer"] = getattr(tokenizer, "name_or_path", None)
-    metadata = {"signature": data_signature(cfg), "stats": stats, "seconds": round(time.time() - t0, 1)}
+        report = tokenizer_report(tokenizer, train_texts)
+        stats["chars_per_token"] = round(report["target"]["chars_per_token"], 2)
+        stats["tokens_per_word"] = round(report["target"]["tokens_per_word"], 2)
+        stats["tokens_per_word_vs_english"] = round(report["tokens_per_word_vs_english"], 2)
+        stats["tokenizer_verdict"] = report["verdict"]
+    metadata = {
+        "signature": data_signature(cfg),
+        "stats": stats,
+        "corpus": extra,
+        "seconds": round(time.time() - t0, 1),
+    }
     (root / METADATA).write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
     return DataBundle(datasets["train"], datasets["eval"], datasets["ood"], datasets.get("grammar"), metadata)
 
@@ -195,7 +261,7 @@ def load_data(cfg: Config) -> DataBundle:
     return DataBundle(
         train=load_from_disk(str(root / "train")),
         eval=load_from_disk(str(root / "eval")),
-        ood=load_from_disk(str(root / "ood")),
+        ood=load_from_disk(str(root / "ood")) if (root / "ood").exists() else Dataset.from_dict({"text": []}),
         grammar=grammar,
         metadata=metadata,
     )

@@ -1,0 +1,19 @@
+# Classical Latin from your own plain-text files (e.g. Latin Library / Perseus / PHI exports).
+# Layout: one work (or book) per file, paragraphs separated by blank lines.
+#   corpora/latin/train/<author>/<work>.txt      corpora/latin/heldout/*.txt (optional)
+target_language = "la"
+data_dir = "data/latin"
+output_dir = "runs/lfm3-1.7b-cpt-la"
+
+[data]
+train_files = ["corpora/latin/train/**/*.txt"]
+# eval_files = ["corpora/latin/heldout/*.txt"]     # or leave unset: 5% of the files are held out whole
+doc_split = "paragraph"
+eval_holdout = "files"
+eval_fraction = 0.05
+strip_marks = ["latin_macrons"]                   # editions disagree on macrons: drop them everywhere
+grammar_files = ["examples/latin-pairs.tsv"]       # extend with your own pairs
+
+[training]
+num_train_epochs = 2
+eval_steps = 100
