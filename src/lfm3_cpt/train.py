@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -20,8 +21,24 @@ from .config import Config
 from .data import DataBundle, Loaders, data_signature, prepare_data, with_eos
 from .device import DeviceInfo, configure_backend, detect, peak_memory_gb, resolve_precision, torch_dtype
 from .evaluation import compare_grammar, corpus_perplexity, count_packed_rows, grammar_test
+from .hub import ensure_model_files, quiet_libraries
 from .modeling import build_lora_config, load_model, load_tokenizer, merge_adapter
 from .reporting import config_to_toml, print_flip_examples, summary_table
+
+
+def checkpointing_args(enabled: bool) -> dict[str, Any]:
+    """Activation checkpointing settings under the name this transformers version uses.
+
+    transformers 5.23 renamed `gradient_checkpointing*` to `activation_checkpointing*` and warns on the old name;
+    older versions only know the old one.
+    """
+    names = {f.name for f in dataclasses.fields(SFTConfig)}
+    flag, kwargs = (
+        ("activation_checkpointing", "activation_checkpointing_kwargs")
+        if "activation_checkpointing" in names
+        else ("gradient_checkpointing", "gradient_checkpointing_kwargs")
+    )
+    return {flag: enabled, kwargs: {"use_reentrant": False} if enabled else None}
 
 
 def build_sft_config(cfg: Config, precision: str, info: DeviceInfo) -> SFTConfig:
@@ -43,8 +60,7 @@ def build_sft_config(cfg: Config, precision: str, info: DeviceInfo) -> SFTConfig
         packing=True,
         packing_strategy="wrapped",
         dataset_text_field="text",
-        gradient_checkpointing=cfg.gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False} if cfg.gradient_checkpointing else None,
+        **checkpointing_args(cfg.gradient_checkpointing),
         logging_steps=cfg.logging_steps,
         eval_strategy="steps",
         eval_steps=cfg.eval_steps,
@@ -127,6 +143,8 @@ def run_training(
     console.rule(f"[bold]LFM3 CPT[/] • {info.name} ({info.backend}) • {precision}")
 
     # --- data + model ------------------------------------------------------------------------------------
+    quiet_libraries()
+    ensure_model_files(cfg.model_id, console)  # before any spinner: one clean download bar
     tokenizer = load_tokenizer(cfg.model_id, cfg.trust_remote_code)
     bundle = prepare_data(cfg, tokenizer, force=force_data, loaders=loaders, log=console.print)
     stats = bundle.metadata.get("stats", {})

@@ -35,9 +35,11 @@ from .chat_eval import answer_perplexity, generate_answers, summarize_generation
 from .config import Config
 from .data import is_prepared, load_data
 from .device import DeviceInfo, configure_backend, detect, peak_memory_gb, resolve_precision, torch_dtype
+from .hub import ensure_model_files, quiet_libraries
 from .modeling import build_lora_config, is_adapter_dir, load_model, load_tokenizer, merge_adapter
 from .reporting import config_to_toml, sft_summary_table
 from .sft_data import SftBundle, SftLoader, prepare_sft_data, sft_signature, template_kwargs, with_template_kwargs
+from .train import checkpointing_args
 
 
 def sft_output_dir(cfg: Config) -> Path:
@@ -67,7 +69,7 @@ def stage_config(cfg: Config) -> Config:
     )
 
 
-def resolve_start(cfg: Config, start: str, log=print) -> str:
+def resolve_start(cfg: Config, start: str, log=print, console: Console | None = None) -> str:
     """Where SFT starts: "cpt" (default), "base", or a model / adapter path.
 
     An adapter is merged (bf16, on CPU) into a standalone model first, so SFT trains a fresh adapter on top of a
@@ -90,6 +92,7 @@ def resolve_start(cfg: Config, start: str, log=print) -> str:
     if path.exists() and is_adapter_dir(path):
         merged = path.resolve().parent / "merged"
         if not (merged / "config.json").exists():
+            ensure_model_files(str(path), console)  # the adapter's base model
             log(f"Merging {path} into {merged} (bf16, CPU) so SFT starts from a standalone model ...")
             merge_adapter(path, merged, None, torch.bfloat16, "cpu", cfg.trust_remote_code)
         return str(merged)
@@ -114,8 +117,7 @@ def build_sft_stage_config(stage: Config, precision: str, info: DeviceInfo) -> S
         completion_only_loss=True,  # loss on the assistant answer only, not on the user's message
         # Batches of similar length: much less padding with short, varied chat examples.
         train_sampling_strategy="group_by_length",
-        gradient_checkpointing=stage.gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False} if stage.gradient_checkpointing else None,
+        **checkpointing_args(stage.gradient_checkpointing),
         logging_steps=stage.logging_steps,
         eval_strategy="steps",
         eval_steps=stage.eval_steps,
@@ -252,7 +254,9 @@ def run_sft(
     configure_backend(info)
     precision = resolve_precision(cfg.precision, info)
     set_seed(cfg.seed)
-    start_path = resolve_start(cfg, start, console.print)
+    quiet_libraries()
+    start_path = resolve_start(cfg, start, console.print, console)
+    ensure_model_files(start_path, console)
     console.rule(f"[bold]LFM3 SFT (stage 2)[/] • {info.name} ({info.backend}) • {precision}")
     console.print(f"🧭 starting from {start_path}")
 

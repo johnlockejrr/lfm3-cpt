@@ -163,6 +163,8 @@ class TrainingDashboard(TrainerCallback):
             self.progress.update(self.train_task, completed=state.global_step)
             self.live.stop()
             self.live = None
+            if not self.console.is_terminal:
+                self.console.line()  # a redirected Live display ends without a newline
 
     # --- logic (separate from the hooks so it is easy to test) -------------------------------------------
     def update_from_logs(self, logs: dict[str, float], step: int, tokens_seen: float | None = None) -> None:

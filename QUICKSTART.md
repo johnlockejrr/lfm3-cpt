@@ -282,3 +282,5 @@ options.
 | `the grammar files contain no pairs` | the pairs file has only comments: add pairs, or `-s grammar_files=` to disable |
 | data seems stale | the cache is rebuilt when data settings or file contents change; `prepare --force` forces it |
 | `no CPT result in …` (sft) | run `train` first, or `sft --from base` / `sft --from <model path>` |
+| you want to see every library warning | `LFM3_CPT_SHOW_WARNINGS=1 lfm3-cpt …` (a few deprecations raised inside TRL/PEFT are hidden by default) |
+| first download shows no progress | the bar appears once the file list is known; behind a proxy, check `HF_ENDPOINT` / `HTTPS_PROXY` |

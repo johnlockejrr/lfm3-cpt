@@ -5,7 +5,14 @@ Nothing here touches the network, so the whole suite runs on CPU in CI.
 
 from __future__ import annotations
 
-import random
+import os
+
+# The suite is fully offline: no library may reach the Hub (set before any huggingface import).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+import random  # noqa: E402
 
 import pytest
 import torch

@@ -46,7 +46,11 @@ addopts = "-ra"
 markers = [
   "slow: end-to-end tests that train a tiny model on CPU (deselect with -m 'not slow')",
 ]
-filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+  "ignore::FutureWarning",
+  "ignore:The AccumulateGrad node's stream:UserWarning",
+]
 
 [tool.ruff]
 line-length = 120

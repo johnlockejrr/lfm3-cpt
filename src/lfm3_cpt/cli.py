@@ -45,6 +45,9 @@ def cli(ctx: click.Context, profile: str | None, config_path: str | None, sets: 
 
     Precedence: defaults < --profile < --config < --set < command options.
     """
+    from .hub import quiet_libraries
+
+    quiet_libraries()  # their tqdm bars turn into one line per redraw under Rich; we show our own progress
     try:
         parsed = parse_set_options(sets)
     except (KeyError, ValueError) as exc:
@@ -127,6 +130,9 @@ def prepare(obj: Ctx, data_dir, train_articles, eval_articles, ood_pages, no_gra
         ood_pages=ood_pages,
         run_grammar=False if no_grammar else None,
     )
+    from .hub import ensure_model_files
+
+    ensure_model_files(cfg.model_id, console)
     tokenizer = load_tokenizer(cfg.model_id, cfg.trust_remote_code)
     bundle = prepare_data(cfg, tokenizer, force=force, log=console.print)
     table = Table(title=f"Data in {cfg.data_dir}", show_header=False)
@@ -295,6 +301,9 @@ def evaluate(obj: Ctx, model_path, adapter, run_grammar, json_out) -> None:
     if adapter is None and is_adapter_dir(target):
         adapter, target = target, adapter_base_model(target)
     device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    from .hub import ensure_model_files
+
+    ensure_model_files(target, console)
     with console.status(f"Loading {target} ..."):
         model, tokenizer = load_for_inference(
             target, torch_dtype(precision), adapter, device_map, cfg.trust_remote_code
@@ -323,6 +332,9 @@ def merge(obj: Ctx, adapter_dir, output_dir, base_model, dtype, device, push_to_
 
     cfg = obj.config()
     out = Path(output_dir) if output_dir else Path(adapter_dir).resolve().parent / "merged"
+    from .hub import ensure_model_files
+
+    ensure_model_files(base_model or adapter_dir, console)
     with console.status("Merging ..."):
         merged = merge_adapter(adapter_dir, out, base_model, torch_dtype(dtype), device, cfg.trust_remote_code)
     console.print(f"💾 Merged model saved to {merged}")
@@ -361,6 +373,9 @@ def generate(obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, tempe
     info = detect()
     target = model_path or cfg.model_id
     device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    from .hub import ensure_model_files
+
+    ensure_model_files(target, console)
     with console.status(f"Loading {target} ..."):
         model, tokenizer = load_for_inference(
             target, torch_dtype(resolve_precision(cfg.precision, info)), adapter, device_map, cfg.trust_remote_code
@@ -474,6 +489,9 @@ def tokenizer_check(obj: Ctx, files, texts, model_path, examples) -> None:
     docs = [norm(d) for d in docs if d.strip()]
     if not docs:
         raise click.ClickException("no text to measure")
+    from .hub import ensure_model_files
+
+    ensure_model_files(model_path or cfg.model_id, console)
     tokenizer = load_tokenizer(model_path or cfg.model_id, cfg.trust_remote_code)
     report = tokenizer_report(tokenizer, docs)
     table = Table(title=f"Tokenizer: {model_path or cfg.model_id}", header_style="bold")
@@ -558,6 +576,9 @@ def rank(obj: Ctx, model_path, text, candidates, candidates_file, input_file, ou
     info = detect()
     target = model_path or default_lm_model(cfg)
     device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    from .hub import ensure_model_files
+
+    ensure_model_files(target, console)
     with console.status(f"Loading {target} ..."):
         model, tokenizer = load_for_inference(
             target, torch_dtype(resolve_precision(cfg.precision, info)), None, device_map, cfg.trust_remote_code
@@ -639,6 +660,9 @@ def chat(obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperat
     info = detect()
     target = model_path or default_chat_model(cfg)
     device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    from .hub import ensure_model_files
+
+    ensure_model_files(target, console)
     with console.status(f"Loading {target} ..."):
         model, tokenizer = load_for_inference(
             target, torch_dtype(resolve_precision(cfg.precision, info)), None, device_map, cfg.trust_remote_code
