@@ -51,6 +51,12 @@ WORDS = [
 ]
 
 
+CHAT_TEMPLATE = (
+    "{{ bos_token }}{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+
+
 def fake_text(rng: random.Random, n_words: int) -> str:
     return " ".join(rng.choice(WORDS) for _ in range(n_words)) + "."
 
@@ -65,7 +71,7 @@ def tiny_model_dir(tmp_path_factory) -> str:
     tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     trainer = trainers.BpeTrainer(
         vocab_size=300,
-        special_tokens=["<pad>", "<s>", "</s>", "<unk>"],
+        special_tokens=["<pad>", "<s>", "</s>", "<unk>", "<|im_start|>", "<|im_end|>"],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
     )
     tok.train_from_iterator(corpus, trainer)
@@ -77,8 +83,15 @@ def tiny_model_dir(tmp_path_factory) -> str:
         single="<s> $A", special_tokens=[("<s>", tok.token_to_id("<s>"))]
     )
     hf_tok = PreTrainedTokenizerFast(
-        tokenizer_object=tok, bos_token="<s>", eos_token="</s>", pad_token="<pad>", unk_token="<unk>"
+        tokenizer_object=tok,
+        bos_token="<s>",
+        eos_token="</s>",
+        pad_token="<pad>",
+        unk_token="<unk>",
+        additional_special_tokens=["<|im_start|>", "<|im_end|>"],
     )
+    # A ChatML-style template, like LFM's; `enable_thinking` is accepted and ignored.
+    hf_tok.chat_template = CHAT_TEMPLATE
     hf_tok.save_pretrained(path)
 
     torch.manual_seed(0)
@@ -167,3 +180,33 @@ def tiny_config(tmp_path, tiny_model_dir) -> Config:
             "phenomena": ["binding", "passives", "scrambling"],
         },
     )
+
+
+def make_chat_splits(n_train: int = 40, n_test: int = 8):
+    """Aya-like rows (inputs/targets/language_code), mixed languages, with a duplicate and an empty answer."""
+    rng = random.Random(3)
+
+    def rows(n, offset):
+        out = {"inputs": [], "targets": [], "language": [], "language_code": []}
+        for i in range(n):
+            tur = i % 4 != 0
+            out["inputs"].append(f"soru {offset + i}: " + fake_text(rng, 6) if tur else f"question {offset + i}?")
+            out["targets"].append(fake_text(rng, 12) if tur else "the answer is yes.")
+            out["language"].append("Turkish" if tur else "English")
+            out["language_code"].append("tur" if tur else "eng")
+        return out
+
+    train = rows(n_train, 0)
+    train["inputs"].append(train["inputs"][1])  # duplicate
+    train["targets"].append(train["targets"][1])
+    train["inputs"].append("boş cevap")  # unusable: empty answer
+    train["targets"].append("  ")
+    for col in ("language", "language_code"):
+        train[col] += [train[col][1], "tur"] if col == "language_code" else [train[col][1], "Turkish"]
+    return {"train": Dataset.from_dict(train), "test": Dataset.from_dict(rows(n_test, 1000))}
+
+
+@pytest.fixture()
+def fake_sft_loader():
+    splits = make_chat_splits()
+    return lambda cfg: splits

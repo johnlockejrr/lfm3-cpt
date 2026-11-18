@@ -96,6 +96,40 @@ class Config:
     ppl_batch_size: int = 2
     run_grammar: bool = True
 
+    # --- stage 2 (optional): instruction tuning (SFT) on Turkish conversations ---------------------------
+    # Default data: the human-written Turkish part of the Aya dataset (Apache-2.0), filtered by language code.
+    sft_dataset: str = "CohereLabs/aya_dataset"
+    sft_dataset_config: str | None = None
+    sft_train_split: str = "train"
+    sft_eval_split: str = "test"  # "" -> hold out sft_eval_holdout of train instead
+    sft_filter_column: str = "language_code"  # "" -> no filter
+    sft_filter_value: str = "tur"
+    sft_user_column: str | None = None  # override the auto-detected column names
+    sft_assistant_column: str | None = None
+    sft_max_train: int = -1  # -1 = all
+    sft_max_eval: int = 200
+    sft_eval_holdout: float = 0.05
+    sft_system_prompt: str = ""  # empty: the model must answer in Turkish without being told to
+    sft_enable_thinking: bool = False  # LFM3's non-reasoning mode, as in the SFT notebook
+    sft_lora_r: int = 16
+    sft_lora_alpha: int = 32
+    sft_lora_dropout: float = 0.05
+    sft_num_train_epochs: float = 2.0
+    sft_max_steps: int = -1
+    sft_learning_rate: float = 2e-4
+    sft_per_device_train_batch_size: int = 4
+    sft_gradient_accumulation_steps: int = 4
+    sft_per_device_eval_batch_size: int = 4
+    sft_max_length: int = 4096  # longer conversations are dropped, never truncated
+    sft_gradient_checkpointing: bool = True
+    sft_logging_steps: int = 5
+    sft_eval_steps: int = 50
+    sft_save_steps: int = 100
+    sft_gen_samples: int = 100  # held-out prompts answered before/after for the chat metrics
+    sft_gen_batch_size: int = 16
+    sft_max_new_tokens: int = 512
+    sft_repetition_penalty: float = 1.1  # recommended in the LFM3 model card
+
     # ----------------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -135,6 +169,20 @@ class Config:
         unknown = set(self.phenomena) - set(TURBLIMP_PHENOMENA)
         if unknown:
             raise ValueError(f"unknown TurBLiMP phenomena: {sorted(unknown)}")
+        for name in (
+            "sft_lora_r",
+            "sft_per_device_train_batch_size",
+            "sft_gradient_accumulation_steps",
+            "sft_max_length",
+            "sft_max_new_tokens",
+            "sft_gen_batch_size",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be > 0")
+        if not 0 <= self.sft_eval_holdout < 1:
+            raise ValueError("sft_eval_holdout must be in [0, 1)")
+        if bool(self.sft_user_column) != bool(self.sft_assistant_column):
+            raise ValueError("set both sft_user_column and sft_assistant_column, or neither")
 
 
 # Hardware profiles. Only the keys that differ from the defaults are listed.
@@ -148,6 +196,11 @@ PROFILES: dict[str, dict[str, Any]] = {
         "per_device_eval_batch_size": 4,
         "ppl_batch_size": 4,
         "dataloader_num_workers": 4,
+        # SFT: short chat examples, so twice the notebook's per-device batch at the same effective batch of 16.
+        "sft_per_device_train_batch_size": 8,
+        "sft_gradient_accumulation_steps": 2,
+        "sft_per_device_eval_batch_size": 8,
+        "sft_gen_batch_size": 32,
     },
     # AMD Strix Halo (gfx1151) with 128 GB unified memory under ROCm. Memory is plentiful but compute is
     # modest, so trade memory for speed: bigger batches and no activation checkpointing. Pinned memory is
@@ -161,6 +214,11 @@ PROFILES: dict[str, dict[str, Any]] = {
         "dataloader_num_workers": 4,
         "dataloader_pin_memory": False,
         "grammar_batch_size": 128,
+        "sft_per_device_train_batch_size": 16,
+        "sft_gradient_accumulation_steps": 1,
+        "sft_per_device_eval_batch_size": 16,
+        "sft_gradient_checkpointing": False,
+        "sft_gen_batch_size": 64,
     },
     # Tiny CPU smoke run: proves the pipeline works end to end, not for real training.
     "cpu-debug": {
@@ -178,6 +236,19 @@ PROFILES: dict[str, dict[str, Any]] = {
         "eval_steps": 1,
         "dataloader_num_workers": 0,
         "precision": "fp32",
+        "sft_max_train": 16,
+        "sft_max_eval": 4,
+        "sft_max_steps": 2,
+        "sft_per_device_train_batch_size": 2,
+        "sft_gradient_accumulation_steps": 1,
+        "sft_per_device_eval_batch_size": 2,
+        "sft_max_length": 256,
+        "sft_logging_steps": 1,
+        "sft_eval_steps": 1,
+        "sft_save_steps": 1,
+        "sft_gen_samples": 4,
+        "sft_gen_batch_size": 2,
+        "sft_max_new_tokens": 8,
     },
 }
 

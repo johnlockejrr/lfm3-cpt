@@ -8,6 +8,9 @@ The recipe is the notebook's. You train on Turkish Wikipedia. Perplexity is meas
 out-of-distribution FineWeb-2 web pages. Grammar is checked with the TurBLiMP minimal-pair benchmark, before and after
 training. At the end the adapter is merged into a standalone checkpoint.
 
+An optional **second stage** then instruction-tunes the CPT model on Turkish conversations (SFT), so it not only
+knows more Turkish but also answers in it. See [Stage 2](#stage-2-optional-turkish-instruction-tuning-sft).
+
 ## Install
 
 Install PyTorch for your GPU **first**, then this package (torch is not pinned to a build in `pyproject.toml`).
@@ -32,7 +35,13 @@ lfm3-cpt info                              # backend, GPU, versions, suggested p
 lfm3-cpt -p rtx3090 prepare                # stream + cache the corpora in data/tr (once)
 lfm3-cpt -p rtx3090 train --merge          # baseline eval → train → final eval → merge
 lfm3-cpt report runs/lfm3-1.7b-cpt-tr      # before/after table again, any time
+
+# optional stage 2
+lfm3-cpt -p rtx3090 sft --merge            # Turkish SFT on top of the CPT model
+lfm3-cpt chat                              # talk to the result
 ```
+
+Or both stages in one go: `lfm3-cpt -p rtx3090 train --sft --merge`.
 
 On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 `-p cpu-debug --set model_id=<small local model>`.
@@ -43,12 +52,14 @@ On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 |---|---|
 | `info` | CUDA/ROCm detection, memory, bf16/TF32, library versions, suggested profile |
 | `show-config [--toml]` | resolved config; `--toml` output can be saved and passed back with `-c` |
-| `prepare` | streams Wikipedia / FineWeb-2 / TurBLiMP and caches them; reused while data settings are unchanged |
-| `train` | full pipeline with live dashboard; `--resume`, `--merge`, `--skip-baseline`, `--max-steps`, `--lr`, … |
+| `prepare [--sft]` | streams Wikipedia / FineWeb-2 / TurBLiMP (and the SFT conversations) and caches them |
+| `train` | full pipeline with live dashboard; `--resume`, `--merge`, `--sft`, `--skip-baseline`, `--max-steps`, … |
 | `evaluate [MODEL]` | perplexity + TurBLiMP for a base model, an adapter dir or a merged model; `--json-out` |
 | `merge ADAPTER` | exact merge into a fresh bf16 base (CPU by default); `--push-to-hub REPO` |
 | `generate [MODEL]` | continue Turkish prompts for a qualitative check; `--chat` uses the chat template |
-| `report RUN…` | summary of one or several finished runs |
+| `sft` | stage 2: Turkish instruction tuning on top of the CPT model (or `--from base` / a path) |
+| `chat [MODEL]` | interactive multi-turn chat; defaults to the run's SFT model, else its CPT model |
+| `report RUN…` | summary of one or several finished runs (both stages for a run directory) |
 
 Every config key can be set from any level: `defaults < --profile < -c file.toml < --set key=value < command options`.
 
@@ -56,6 +67,55 @@ Every config key can be set from any level: `defaults < --profile < -c file.toml
 lfm3-cpt -p strix-halo -s train_articles=20000 -s lora_gate_proj=true train --lr 1e-4
 lfm3-cpt -p rtx3090 show-config --toml > my-run.toml   # edit, then: lfm3-cpt -c my-run.toml train
 ```
+
+## Stage 2 (optional): Turkish instruction tuning (SFT)
+
+CPT teaches the model the language; it does not teach it to *answer* in that language. After CPT the model may
+still reply in English, or continue your message instead of answering it. A short SFT pass on Turkish
+conversations fixes that. The stage follows Liquid's SFT notebook, with the extraction task swapped for chat:
+prompt-completion data, loss on the answer only, LoRA r=16 / alpha=32 / dropout 0.05, effective batch 16,
+LFM3's non-reasoning mode (`enable_thinking=False`), greedy evaluation with `repetition_penalty=1.1`.
+
+```bash
+lfm3-cpt -p rtx3090 sft                         # start from this run's CPT model
+lfm3-cpt -p rtx3090 sft --from base -o runs/sft-only   # control: the same SFT without CPT
+lfm3-cpt report runs/lfm3-1.7b-cpt-tr runs/sft-only
+```
+
+**Where it starts.** `--from cpt` (default) uses `<run>/merged`, merging `<run>/adapter` first (bf16, CPU) if
+needed. SFT then trains a fresh adapter on a standalone model instead of stacking adapters. The SFT adapter
+records the merged CPT model as its base, so `lfm3-cpt merge <run>/sft/adapter` works. Running `--from base`
+into another output dir is the experiment that shows what CPT actually adds.
+
+**Data.** The default is the Turkish part of the [Aya dataset](https://huggingface.co/datasets/CohereLabs/aya_dataset)
+(`language_code == "tur"`): about 4,000 human-written prompt/answer pairs, Apache-2.0, with its own test split.
+Because it is human-written rather than machine-translated, it is a good fit for teaching *natural* Turkish. Any
+other Hub dataset works if it uses one of the common layouts, which are detected automatically: `messages`,
+ShareGPT `conversations`, Aya `inputs`/`targets`, Alpaca `instruction`/`input`/`output`, or prompt/response-style
+pairs. Otherwise, name the columns with `-s sft_user_column=… -s sft_assistant_column=…`. Multi-turn
+conversations are trained on their last assistant turn. Conversations longer than `sft_max_length` are dropped
+rather than truncated, exact duplicates are removed, and eval examples that also appear in train are removed.
+For a larger, synthetic corpus, try `--dataset turkish-nlp-suite/InstrucTurca --filter "" --max-train 20000`
+(CC-BY-SA-4.0, about 2.5M rows; the full file is downloaded once).
+
+**Metrics** (before → after, on held-out conversations):
+
+| metric | what it tells you |
+|---|---|
+| answer perplexity | how well the model predicts the reference answers (the SFT loss, token-weighted) |
+| answers in Turkish / English | language of the generated answers (a dependency-free stopword + letter heuristic) |
+| answers finished (EOS) | answers that end on their own before the token limit (vs. rambling or loops) |
+| chrF vs reference | rough character-level similarity to the reference; free-form answers can differ and still be good |
+| perplexity (Wikipedia, web), TurBLiMP | the stage-1 metrics again: a **forgetting check**, did SFT undo CPT? |
+
+Every answer is written to `sft/generations.jsonl` (prompt, reference, answer before, answer after, detected
+languages). Reading 20 of them tells you more than any of the numbers.
+
+SFT keys (all settable with `-s`): `sft_dataset`, `sft_filter_column`/`sft_filter_value`, `sft_system_prompt`,
+`sft_max_train`, `sft_num_train_epochs` (2: the default data is small), `sft_learning_rate`, `sft_lora_r`,
+`sft_max_length`, `sft_gen_samples`, `sft_max_new_tokens`, … (`lfm3-cpt show-config` lists them all). The
+hardware profiles set the SFT batch sizes too. There is no default system prompt, so the model learns to answer
+in Turkish without being told to.
 
 ## Profiles
 
@@ -79,6 +139,8 @@ hyper-parameters and results are comparable across machines. If the Strix Halo r
 - `adapter/`: the final LoRA adapter + tokenizer
 - `results.json`: config, device, data stats, baseline/final metrics, grammar flips, training stats
 - `merged/`: standalone model (with `--merge`)
+- `sft/`: stage 2, same layout (`adapter/`, `checkpoints/`, `metrics.jsonl`, `results.json`, `merged/`) plus
+  `generations.jsonl`
 
 ## Changes from the notebook
 
@@ -112,9 +174,11 @@ notebook by default.
 ## Tests
 
 ```bash
-pytest                 # ~1 min on CPU, fully offline (a tiny Llama + BPE tokenizer is built on the fly)
+pytest                 # well under a minute on CPU, fully offline (a tiny Llama + BPE tokenizer is built on the fly)
 pytest -m "not slow"   # skip the end-to-end training/CLI tests
 ```
 
 The end-to-end tests run the real pipeline: prepare, baseline, a few LoRA steps, checkpoints, resume, final eval,
-merge, and then the `evaluate`/`merge`/`generate`/`report` commands on the result.
+merge, and then the `evaluate`/`merge`/`generate`/`report` commands on the result. The stage-2 tests run CPT
+without merging, then SFT from the CPT adapter (exercising the automatic merge), resume, the `--from base`
+control, `report`, `chat` and merging the SFT adapter.
