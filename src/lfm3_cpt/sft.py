@@ -167,6 +167,7 @@ def evaluate_chat(
                 cfg.sft_gen_batch_size,
                 cfg.sft_repetition_penalty,
                 lambda n: progress.advance(task, n),
+                cfg.sft_no_repeat_ngram,
             )
             out["generation"] = summarize_generations(
                 answers, [r["completion"][0]["content"] for r in gen_rows], cfg.target_language
@@ -302,7 +303,7 @@ def run_sft(
     )
     for cb in (ProgressCallback, PrinterCallback):
         trainer.remove_callback(cb)
-    trainer.add_callback(TrainingDashboard(console))
+    trainer.add_callback(TrainingDashboard(console, label="SFT"))
     trainer.add_callback(JsonlMetricsLogger(out_dir / "metrics.jsonl"))
     trainable, total = trainer.model.get_nb_trainable_parameters()
     console.print(

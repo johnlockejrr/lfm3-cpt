@@ -21,6 +21,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from .chatui import final_answer
 from .evaluation import _input_device, eval_mode
 from .sft_data import Message, chat_ids
 
@@ -383,6 +384,7 @@ def generate_answers(
     batch_size: int = 16,
     repetition_penalty: float = 1.1,
     progress: ProgressFn | None = None,
+    no_repeat_ngram: int = 0,
 ) -> list[dict[str, Any]]:
     """Greedy answers. Prompts are left-padded by hand, so the shared tokenizer's settings are never changed."""
     encoded = [chat_ids(tokenizer, list(p), add_generation_prompt=True, **kwargs) for p in prompts]
@@ -407,13 +409,14 @@ def generate_answers(
                 do_sample=False,
                 repetition_penalty=repetition_penalty,
                 pad_token_id=pad_id,
+                **({"no_repeat_ngram_size": no_repeat_ngram} if no_repeat_ngram > 0 else {}),
             )
             for row, i in enumerate(idx):
                 new = out[row, width:].tolist()
                 finished = any(t in eos for t in new)
                 if finished:
                     new = new[: next(k for k, t in enumerate(new) if t in eos)]
-                text = tokenizer.decode(new, skip_special_tokens=True).strip()
+                text = final_answer(tokenizer.decode(new, skip_special_tokens=True))  # drop any reasoning
                 results[i] = {"text": text, "finished": finished, "tokens": len(new)}
             if progress:
                 progress(len(idx))

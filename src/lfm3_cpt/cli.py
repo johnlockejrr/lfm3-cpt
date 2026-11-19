@@ -357,9 +357,12 @@ def merge(obj: Ctx, adapter_dir, output_dir, base_model, dtype, device, push_to_
 @click.option("--chat", is_flag=True, help="Wrap the prompt in the chat template instead of raw continuation.")
 @click.option("--max-new-tokens", type=int, default=128)
 @click.option("--temperature", type=float, default=0.3, help="0 = greedy.")
-@click.option("--repetition-penalty", type=float, default=1.05)
+@click.option("--repetition-penalty", type=float, default=1.1)
+@click.option("--no-repeat-ngram", type=int, default=0, help="Never repeat a sequence of this many tokens; 0 = off.")
 @pass_ctx
-def generate(obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, temperature, repetition_penalty) -> None:
+def generate(
+    obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, temperature, repetition_penalty, no_repeat_ngram
+) -> None:
     """Quick qualitative check: continue text with a base, adapter or merged model.
 
     Without --prompt, two Turkish prompts are used (target_language=tr); other languages need --prompt.
@@ -399,6 +402,8 @@ def generate(obj: Ctx, model_path, adapter, prompts, chat, max_new_tokens, tempe
         sampling = {"do_sample": temperature > 0}
         if temperature > 0:
             sampling["temperature"] = temperature
+        if no_repeat_ngram > 0:
+            sampling["no_repeat_ngram_size"] = no_repeat_ngram
         with torch.no_grad():
             out = model.generate(
                 **inputs,
@@ -452,6 +457,175 @@ def _report_one(name: str, results: dict[str, Any]) -> None:
         console.print(sft_summary_table(results.get("baseline"), results.get("final"), language=language))
     else:
         console.print(summary_table(results.get("baseline"), results.get("final")))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+def _parse_size(value: str | None) -> int | None:
+    """'250M' -> 250_000_000, '1.5G' -> 1_500_000_000, '20000' -> 20000."""
+    if value is None:
+        return None
+    v = value.strip().upper().replace("_", "")
+    mult = {"K": 10**3, "M": 10**6, "G": 10**9, "B": 10**9}.get(v[-1:], 1)
+    number = v[:-1] if mult != 1 else v
+    try:
+        return int(float(number) * mult)
+    except ValueError as exc:
+        raise click.BadParameter(f"not a size: {value!r} (e.g. 20000, 250M, 1.5G)") from exc
+
+
+@cli.command()
+@click.argument("dataset", required=False)
+@click.option("--subset", "ds_config", help="Dataset subset (configuration), e.g. heb_Hebr or 20231101.he.")
+@click.option("--split", default="train", show_default=True)
+@click.option("--data-files", multiple=True, help="Instead of DATASET: local files/globs or hf:// URLs (repeatable).")
+@click.option("--builder", type=click.Choice(["json", "csv", "parquet", "text"]), help="Format of --data-files.")
+@click.option("--inspect", is_flag=True, help="Only print the structure of the first records, to find the text field.")
+@click.option("-o", "--output", "prefix", help="Output prefix: writes PREFIX.train.jsonl and PREFIX.eval.jsonl.")
+@click.option(
+    "--field",
+    "text_field",
+    default="text",
+    show_default=True,
+    help="Text field (dotted path). A list is joined: strings directly, records via --item-field.",
+)
+@click.option("--item-field", help="For a list of records: the field holding the text of each item.")
+@click.option("--join", default="\\n", show_default=True, help="Separator when joining a list (\\n, \\n\\n, space).")
+@click.option("--title-field", help="Prepend this field (e.g. title) to the text, separated by a blank line.")
+@click.option("--min-chars", type=int, default=200, show_default=True, help="Drop shorter documents.")
+@click.option("--eval-docs", type=int, default=200, show_default=True, help="Documents written to the eval file first.")
+@click.option("--max-docs", help="Training document budget (e.g. 50000, 50K); 0 = write only the eval file.")
+@click.option("--max-chars", help="Training character budget (e.g. 200M). Whichever budget is hit first wins.")
+@click.option("--skip", type=int, default=0, help="Skip the first N records (e.g. to take a disjoint slice).")
+@click.option(
+    "--shuffle-buffer",
+    type=int,
+    default=10_000,
+    show_default=True,
+    help="Streaming shuffle buffer (0 = keep the dataset order).",
+)
+@click.option("--seed", type=int, default=42, show_default=True)
+def export(
+    dataset,
+    ds_config,
+    split,
+    data_files,
+    builder,
+    inspect,
+    prefix,
+    text_field,
+    item_field,
+    join,
+    title_field,
+    min_chars,
+    eval_docs,
+    max_docs,
+    max_chars,
+    skip,
+    shuffle_buffer,
+    seed,
+) -> None:
+    """Stream a Hub dataset (or raw files) into budgeted train/eval JSONL files for `train_files`.
+
+    \b
+    Examples:
+      lfm3-cpt export HuggingFaceFW/fineweb-2 --subset heb_Hebr --inspect
+      lfm3-cpt export HuggingFaceFW/fineweb-2 --subset heb_Hebr -o corpora/he/fineweb2 --max-chars 200M
+      lfm3-cpt export wikimedia/wikipedia --subset 20231101.he --title-field title -o corpora/he/wiki --max-chars 100M
+    """
+    import itertools
+
+    from .hub_export import ExportStats, Source, describe, export_corpus, stream_records
+
+    if not dataset and not data_files:
+        raise click.UsageError("give a DATASET id or --data-files")
+    source = Source(dataset, ds_config, split, list(data_files), builder)
+    doc_budget, char_budget = _parse_size(max_docs), _parse_size(max_chars)  # validate before streaming
+    try:
+        records = stream_records(source, 0 if inspect else shuffle_buffer, seed)
+        if inspect:
+            for i, record in enumerate(itertools.islice(records, 3)):
+                console.rule(f"record {i}")
+                for line in describe(record):
+                    console.print(line, highlight=False, markup=False)
+            console.print("\nUse --field (and --item-field for lists of records) to choose the text.")
+            return
+    except Exception as exc:  # unknown dataset, missing config, no network...
+        raise click.ClickException(f"cannot read {source.describe()}: {exc}") from exc
+    if not prefix:
+        raise click.UsageError("give -o/--output PREFIX (or use --inspect)")
+    joiner = join.replace("\\n", "\n").replace("\\t", "\t")
+
+    def show(st: ExportStats) -> None:
+        status.update(
+            f"{source.describe()}: {st.records_seen:,} records read • train {st.train_docs:,} docs "
+            f"/ {st.train_chars / 1e6:,.1f}M chars • eval {st.eval_docs:,}"
+        )
+
+    with console.status(f"Streaming {source.describe()} ...") as status:
+        try:
+            stats = export_corpus(
+                records,
+                prefix,
+                text_field,
+                item_field,
+                joiner,
+                title_field,
+                min_chars,
+                eval_docs,
+                doc_budget,
+                char_budget,
+                skip,
+                show,
+            )
+        except Exception as exc:
+            raise click.ClickException(f"export failed: {exc}") from exc
+    table = Table(title=f"Exported {source.describe()}", show_header=False)
+    if stats.files.get("train"):
+        table.add_row(
+            "train", f"{stats.files['train']} • {stats.train_docs:,} docs • {stats.train_chars / 1e6:,.1f}M chars"
+        )
+    if stats.files.get("eval"):
+        table.add_row(
+            "eval", f"{stats.files['eval']} • {stats.eval_docs:,} docs • {stats.eval_chars / 1e6:,.1f}M chars"
+        )
+    table.add_row(
+        "records read",
+        f"{stats.records_seen:,} ({stats.skipped_empty:,} without text, "
+        f"{stats.skipped_short:,} shorter than {min_chars})",
+    )
+    console.print(table)
+    if stats.train_docs + stats.eval_docs == 0:
+        raise click.ClickException(f"no text found in field {text_field!r}: run with --inspect to see the records")
+    if stats.exhausted and (max_docs or max_chars):
+        console.print("[yellow]The source ran out before the budget was reached.[/yellow]")
+
+
+@cli.command()
+@click.argument("lang")
+@click.option("-o", "--output", required=True, help="Pairs file to write (JSONL), for grammar_files.")
+@click.option("--limit", type=int, help="Keep a random sample of N pairs.")
+@click.option(
+    "--tsv",
+    "tsv_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Use an already downloaded MultiBLiMP data.tsv instead of the Hub.",
+)
+def multiblimp(lang, output, limit, tsv_path) -> None:
+    """Minimal pairs for LANG (ISO 639-3, e.g. heb) from MultiBLiMP 1.0 (subject-verb agreement).
+
+    MultiBLiMP (Jumelet et al. 2025, CC-BY-4.0) derives pairs from Universal Dependencies for 101 languages.
+    """
+    from .hub_export import download_multiblimp, multiblimp_rows, write_pairs
+
+    try:
+        text = Path(tsv_path).read_text(encoding="utf-8") if tsv_path else download_multiblimp(lang)
+        rows = multiblimp_rows(text)
+    except Exception as exc:
+        raise click.ClickException(f"cannot get MultiBLiMP pairs for {lang!r}: {exc}") from exc
+    n = write_pairs(rows, output, limit)
+    kinds = sorted({r["phenomenon"] for r in rows})
+    console.print(f"🧩 {n:,} pairs → {output} ({', '.join(kinds)})")
+    console.print(f"   use with: -s grammar_files={output}")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -643,16 +817,26 @@ def default_chat_model(cfg: Config) -> str:
 @click.option("--thinking/--no-thinking", default=False, show_default=True, help="LFM3 reasoning mode.")
 @click.option("--max-new-tokens", type=int, default=1024)
 @click.option("--temperature", type=float, default=0.3, help="0 = greedy.")
-@click.option("--repetition-penalty", type=float, default=1.05)
+@click.option("--repetition-penalty", type=float, default=1.1, help="1.1 is the LFM3 model card's recommendation.")
+@click.option(
+    "--no-repeat-ngram",
+    type=int,
+    default=8,
+    show_default=True,
+    help="Never repeat a sequence of this many tokens (stops loops); 0 = off.",
+)
 @pass_ctx
-def chat(obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperature, repetition_penalty) -> None:
+def chat(
+    obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperature, repetition_penalty, no_repeat_ngram
+) -> None:
     """Interactive multi-turn chat. Default model: this run's SFT model, else its CPT model, else the base.
 
-    Type /reset to clear the conversation, /exit (or Ctrl-D) to quit.
+    Type /reset to clear the conversation, /exit (or Ctrl-D) to quit. Reasoning (<think> ... </think>) is hidden
+    unless --thinking is given, and only the final answer is kept in the conversation.
     """
     import torch
-    from transformers import TextStreamer
 
+    from .chatui import AnswerStreamer, final_answer
     from .device import detect, resolve_precision, torch_dtype
     from .modeling import load_for_inference
 
@@ -670,10 +854,15 @@ def chat(obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperat
     device = model.get_input_embeddings().weight.device
     console.print(f"💬 [bold]{target}[/] — /reset, /exit")
     history: list[dict[str, str]] = [{"role": "system", "content": system_prompt}] if system_prompt else []
-    streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    streamer = AnswerStreamer(
+        tokenizer,
+        show_thinking=thinking,
+        write=lambda t: click.echo(t, nl=False),
+        on_thinking=lambda: click.echo(click.style("(thinking…) ", dim=True), nl=False),
+    )
     while True:
         try:
-            text = click.prompt(click.style("sen", fg="cyan", bold=True), prompt_suffix="> ").strip()
+            text = click.prompt(click.style("you", fg="cyan", bold=True), prompt_suffix="> ").strip()
         except (EOFError, click.Abort):
             break
         if text in {"/exit", "/quit"}:
@@ -690,7 +879,10 @@ def chat(obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperat
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
         sampling = {"do_sample": temperature > 0, **({"temperature": temperature} if temperature > 0 else {})}
+        if no_repeat_ngram > 0:
+            sampling["no_repeat_ngram_size"] = no_repeat_ngram
         click.echo(click.style("model> ", fg="green", bold=True), nl=False)
+        streamer.reset()
         with torch.no_grad():
             out = model.generate(
                 **inputs,
@@ -700,8 +892,8 @@ def chat(obj: Ctx, model_path, system_prompt, thinking, max_new_tokens, temperat
                 streamer=streamer,
                 **sampling,
             )
-        answer = tokenizer.decode(out[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True).strip()
-        history.append({"role": "assistant", "content": answer})
+        answer = tokenizer.decode(out[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True)
+        history.append({"role": "assistant", "content": final_answer(answer)})
 
 
 def main() -> None:

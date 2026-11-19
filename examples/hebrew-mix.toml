@@ -1,0 +1,41 @@
+# Modern Hebrew from a mixed corpus built with `lfm3-cpt export` (see QUICKSTART § 3):
+#
+#   corpora/he/wiki.{train,eval}.jsonl        Hebrew Wikipedia            (encyclopedic)
+#   corpora/he/fineweb2.{train,eval}.jsonl    FineWeb-2 Hebrew web pages  (news, forums, shops, ...)
+#   corpora/he/knesset.{train,eval}.jsonl     optional: Knesset protocols (spoken, parliamentary)
+#   corpora/en/fineweb-edu.{train,eval}.jsonl English replay, ~10-15% of the characters, against forgetting
+#   corpora/he/multiblimp-heb.jsonl           2,330 subject-verb agreement pairs (MultiBLiMP)
+#
+# Held-out text: every Hebrew source's eval file. "Out-of-distribution" text is the English eval file, so that
+# row of the results table answers one question: did Hebrew training make the model worse at English?
+target_language = "he"
+data_dir = "data/he-mix"
+output_dir = "runs/lfm3-1.7b-cpt-he"
+
+[data]
+train_files = ["corpora/he/*.train.jsonl", "corpora/en/*.train.jsonl"]
+eval_files = ["corpora/he/*.eval.jsonl"]
+ood_files = ["corpora/en/*.eval.jsonl"]
+file_min_chars = 200
+# Modern Hebrew is written without vowel points; the few pointed words in web text are normalized away so the
+# same word is always tokenized the same way. Maqaf, geresh and gershayim are kept.
+strip_marks = ["hebrew_cantillation", "hebrew_points"]
+grammar_files = ["corpora/he/multiblimp-heb.jsonl"]
+
+[lora]
+# Decide after `lfm3-cpt tokenizer-check corpora/he/wiki.train.jsonl`: set true if the verdict is fair/poor.
+train_embeddings = false
+
+[training]
+num_train_epochs = 1
+eval_steps = 250
+save_steps = 500
+save_total_limit = 4
+
+[sft]
+# Stage 2: open Hebrew instruction data is scarce and mostly machine-translated. This one is a translation of
+# Stanford Alpaca (non-commercial licence, like the original); expect translationese in the answers.
+sft_dataset = "ashercn97/hebrew_alpaca"
+sft_filter_column = ""
+sft_eval_split = ""          # no test split: hold out sft_eval_holdout of it
+sft_eval_holdout = 0.03

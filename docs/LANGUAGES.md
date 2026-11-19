@@ -86,6 +86,50 @@ doc_split = "paragraph"
 - **The cache** (`data_dir`) records every file's size and modification time. Editing a file, adding one, or
   changing any data setting rebuilds it on the next `prepare`/`train`. Training-only settings do not.
 
+### 2.3 Building a large corpus from Hub datasets
+
+A good corpus mixes registers (encyclopedic, web, spoken, literary) and keeps some of the model's original
+languages in the mix. `lfm3-cpt export` builds such a mix one source at a time, from any Hub dataset or from
+raw downloaded files. Each source becomes local JSONL files that `train_files` reads.
+
+```bash
+lfm3-cpt export HuggingFaceFW/fineweb-2 --subset heb_Hebr --inspect                       # 1. look
+lfm3-cpt export HuggingFaceFW/fineweb-2 --subset heb_Hebr -o corpora/he/fineweb2 --max-chars 120M   # 2. export
+```
+
+- **`--inspect`** prints the structure of the first records. Datasets name their text field differently, so look
+  before exporting.
+- **`--field`** is the text field, as a dotted path for nested records. If it holds a *list*, the items are joined
+  with `--join` (default: newline). For a list of records, such as the sentences of a protocol,
+  **`--item-field`** names the text inside each item. **`--title-field`** puts a title above the text.
+- **Budgets:** `--max-chars` (e.g. `200M`) or `--max-docs` (e.g. `50K`) for the training file; whichever is reached
+  first ends the export. Only that much is streamed, so a multi-terabyte dataset costs only its slice.
+- **Evaluation:** the first `--eval-docs` documents go to `<prefix>.eval.jsonl` and the rest to
+  `<prefix>.train.jsonl`, so the two never overlap. `--max-docs 0` writes only the eval file.
+- **`--shuffle-buffer`** (default 10,000) shuffles while streaming, so a dataset sorted by date or topic doesn't
+  give you only its first slice. `--skip N` takes a later, disjoint slice.
+- **Raw files:** datasets that need a loading script (no longer supported by `datasets`) can be downloaded with
+  `hf download` and read with `--data-files 'path/**/*.json*'` (and `--builder` if the extension is ambiguous).
+
+Then point the config at the files: every source's train file in `train_files` (with `@N` weights if you want),
+and every eval file in `eval_files`:
+
+```toml
+train_files = ["corpora/he/*.train.jsonl", "corpora/en/*.train.jsonl"]
+eval_files  = ["corpora/he/*.eval.jsonl"]
+ood_files   = ["corpora/en/*.eval.jsonl"]    # English held-out text: measures forgetting
+```
+
+**Replay.** Training only on the new language slowly erodes what the model knew in its original languages,
+including facts it learned in English. Keeping 10–15% of the characters in English (FineWeb-Edu is a good
+general source) is the standard remedy. Using the English eval file as `ood_files` makes the "out-of-distribution"
+row of the results table a direct forgetting check.
+
+**How big?** `prepare` reports the token count. Training time on the RTX 3090 is roughly tokens ÷ 3,300 seconds:
+about 1 hour for 12M tokens, 5 hours for 60M, 3.5 days for 1B. `examples/hebrew-mix.toml` is a worked
+example: about 200M characters from Wikipedia, FineWeb-2 and English replay, optionally with Knesset protocols
+and HeDC4 ([QUICKSTART § 3](../QUICKSTART.md#32-a-real-corpus-wikipedia--web--english-replay)).
+
 ---
 
 ## 3. Normalization
@@ -173,6 +217,16 @@ broken down by phenomenon, and `results.json` counts the pairs training fixed an
 
 `examples/latin-pairs.tsv` has eight Latin pairs (agreement, case) as a model, and
 `examples/aramaic-pairs.template.tsv` is an empty template.
+
+**Ready-made pairs for 101 languages.** MultiBLiMP 1.0 (Jumelet et al., 2025; CC-BY-4.0) derives subject-verb
+agreement pairs (number, person, gender) from Universal Dependencies:
+
+```bash
+lfm3-cpt multiblimp heb -o corpora/he/multiblimp-heb.jsonl     # ISO 639-3 code; check the dataset for its list
+```
+
+It covers one phenomenon family only, so it is a narrower test than TurBLiMP, but it is the same test across
+languages.
 
 ---
 

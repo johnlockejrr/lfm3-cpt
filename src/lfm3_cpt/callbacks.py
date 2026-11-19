@@ -64,8 +64,11 @@ def _fmt(value: float | None, spec: str) -> str:
 class TrainingDashboard(TrainerCallback):
     """Live Rich view: progress bar + training/eval metrics, refreshed while training runs."""
 
-    def __init__(self, console: Console | None = None, tokens_per_step: int | None = None, ema: float = 0.9):
+    def __init__(
+        self, console: Console | None = None, tokens_per_step: int | None = None, ema: float = 0.9, label: str = ""
+    ):
         self.console = console or Console()
+        self.label = label
         self.tokens_per_step = tokens_per_step
         self.ema_beta = ema
         self.progress = make_progress(self.console)
@@ -122,7 +125,9 @@ class TrainingDashboard(TrainerCallback):
     def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         if not state.is_world_process_zero:
             return
-        self.train_task = self.progress.add_task("training", total=state.max_steps, completed=state.global_step)
+        self.train_task = self.progress.add_task(
+            f"{self.label} training" if self.label else "training", total=state.max_steps, completed=state.global_step
+        )
         self._last_time, self._last_step = time.time(), state.global_step
         self._last_tokens = float(state.num_input_tokens_seen or 0)
         self.live = Live(self, console=self.console, refresh_per_second=4, transient=False)
@@ -141,7 +146,9 @@ class TrainingDashboard(TrainerCallback):
             total = (
                 len(eval_dataloader) if eval_dataloader is not None and hasattr(eval_dataloader, "__len__") else None
             )
-            self.eval_task = self.progress.add_task("evaluating", total=total)
+            self.eval_task = self.progress.add_task(
+                f"{self.label} evaluating" if self.label else "evaluating", total=total
+            )
         self.progress.advance(self.eval_task)
 
     def on_evaluate(

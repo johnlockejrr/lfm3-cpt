@@ -49,7 +49,7 @@ markers = [
 filterwarnings = [
   "ignore::DeprecationWarning",
   "ignore::FutureWarning",
-  "ignore:The AccumulateGrad node's stream:UserWarning",
+  "ignore:The AccumulateGrad node's stream:UserWarning",  # PyTorch note when tests train on a GPU
 ]
 
 [tool.ruff]

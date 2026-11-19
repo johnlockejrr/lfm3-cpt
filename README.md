@@ -19,7 +19,7 @@ instead of Wikipedia, with:
 - a tokenizer coverage check
 - a `rank` command that scores candidate restorations of a lacuna
 
-Worked setups for Modern Hebrew, Classical Latin and Targumic/Samaritan Aramaic are in
+An `export` command builds large mixed corpora from Hub datasets. Worked setups for Modern Hebrew (a Wikipedia + web + English-replay mix), Classical Latin and Targumic/Samaritan Aramaic are in
 [docs/LANGUAGES.md](docs/LANGUAGES.md) and `examples/`.
 
 **→ [QUICKSTART.md](QUICKSTART.md) has the exact commands for every case.**
@@ -72,6 +72,8 @@ On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 | `generate [MODEL]` | continue prompts (`--prompt`) for a qualitative check; `--chat` uses the chat template |
 | `sft` | stage 2: Turkish instruction tuning on top of the CPT model (or `--from base` / a path) |
 | `chat [MODEL]` | interactive multi-turn chat; defaults to the run's SFT model, else its CPT model |
+| `export [DATASET]` | stream a Hub dataset (or raw files) into budgeted train/eval JSONL for `train_files`; `--inspect` shows its fields |
+| `multiblimp LANG` | minimal pairs for 101 languages (MultiBLiMP, subject-verb agreement) for `grammar_files` |
 | `tokenizer-check [FILES]` | how well the tokenizer covers your text, compared with English, with a recommendation |
 | `rank [MODEL]` | rank candidate fillers of a gap (`___`) by model probability: lacunae, conjectures, variants |
 | `report RUN…` | summary of one or several finished runs (both stages for a run directory) |
@@ -90,6 +92,11 @@ still reply in English, or continue your message instead of answering it. A shor
 conversations fixes that. The stage follows Liquid's SFT notebook, with the extraction task swapped for chat:
 prompt-completion data, loss on the answer only, LoRA r=16 / alpha=32 / dropout 0.05, effective batch 16,
 LFM3's non-reasoning mode (`enable_thinking=False`), greedy evaluation with `repetition_penalty=1.1`.
+
+One deliberate difference: 1 epoch at learning rate 1e-4, not the notebook's 2e-4. On Turkish, 2 epochs at
+2e-4 made the model *answer* some facts worse than the original did. Ranking showed it still knew them, but its
+answers no longer reached them. 1 epoch at 1e-4 got the same gains (answers finished on their own: 23% → 91%)
+and left the stage-1 metrics unchanged.
 
 ```bash
 lfm3-cpt -p rtx3090 sft                         # start from this run's CPT model
@@ -127,7 +134,7 @@ Every answer is written to `sft/generations.jsonl` (prompt, reference, answer be
 languages). Reading 20 of them tells you more than any of the numbers.
 
 SFT keys (all settable with `-s`): `sft_dataset`, `sft_filter_column`/`sft_filter_value`, `sft_system_prompt`,
-`sft_max_train`, `sft_num_train_epochs` (2: the default data is small), `sft_learning_rate`, `sft_lora_r`,
+`sft_max_train`, `sft_num_train_epochs` (1), `sft_learning_rate` (1e-4), `sft_lora_r`,
 `sft_max_length`, `sft_gen_samples`, `sft_max_new_tokens`, … (`lfm3-cpt show-config` lists them all). The
 hardware profiles set the SFT batch sizes too. There is no default system prompt, so the model learns to answer
 in Turkish without being told to.

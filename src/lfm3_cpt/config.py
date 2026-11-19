@@ -149,9 +149,9 @@ class Config:
     sft_lora_r: int = 16
     sft_lora_alpha: int = 32
     sft_lora_dropout: float = 0.05
-    sft_num_train_epochs: float = 2.0
+    sft_num_train_epochs: float = 1.0  # 1 epoch at 1e-4 kept the CPT gains intact in testing; 2 at 2e-4 did not
     sft_max_steps: int = -1
-    sft_learning_rate: float = 2e-4
+    sft_learning_rate: float = 1e-4
     sft_per_device_train_batch_size: int = 4
     sft_gradient_accumulation_steps: int = 4
     sft_per_device_eval_batch_size: int = 4
@@ -164,6 +164,7 @@ class Config:
     sft_gen_batch_size: int = 16
     sft_max_new_tokens: int = 512
     sft_repetition_penalty: float = 1.1  # recommended in the LFM3 model card
+    sft_no_repeat_ngram: int = 0  # >0 blocks repeated n-grams in the evaluation answers (0 keeps runs comparable)
 
     # ----------------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:

@@ -77,34 +77,130 @@ lfm3-cpt -p rtx3090 -s train_articles=30000 -s data_dir=data/tr-30k train -o run
 
 ---
 
-## 3. Modern Hebrew from Wikipedia
+## 3. Modern Hebrew
+
+### 3.1 Quick look: Wikipedia only
+
+The same recipe as Turkish, in one config. A fast first impression of how LFM3 takes to Hebrew:
 
 ```bash
 lfm3-cpt -p rtx3090 -c examples/hebrew-wiki.toml prepare
-```
-
-Read the tokenizer lines in the table that `prepare` prints (`chars_per_token`, `tokenizer_verdict`). The example
-config already trains the embeddings. If the verdict is "good", you can switch that off with
-`-s train_embeddings=false`.
-
-```bash
 lfm3-cpt -p rtx3090 -c examples/hebrew-wiki.toml train --merge
-lfm3-cpt -p rtx3090 -c examples/hebrew-wiki.toml generate --prompt "ירושלים היא"
 ```
 
-For stage 2, first check which languages the Aya dataset has:
+### 3.2 A real corpus: Wikipedia + web + English replay
+
+Build the corpus once with `export`. Each source becomes `<name>.train.jsonl`, plus `<name>.eval.jsonl` with the
+first documents held out. The budgets are in characters: `M` = million.
 
 ```bash
-python -c "from datasets import load_dataset; print(sorted(set(load_dataset('CohereLabs/aya_dataset', split='train')['language_code'])))"
+# Hebrew Wikipedia: encyclopedic
+lfm3-cpt export wikimedia/wikipedia --subset 20231101.he --title-field title \
+    -o corpora/he/wiki --max-chars 60M --eval-docs 100
+
+# Hebrew web pages (FineWeb-2): news, forums, shops, blogs
+lfm3-cpt export HuggingFaceFW/fineweb-2 --subset heb_Hebr \
+    -o corpora/he/fineweb2 --max-chars 120M --eval-docs 100
+
+# English replay (FineWeb-Edu), about 10-15% of the mix: keeps the model from forgetting English
+lfm3-cpt export HuggingFaceFW/fineweb-edu --subset sample-10BT \
+    -o corpora/en/fineweb-edu --max-chars 25M --eval-docs 100
+
+# Grammar test: 2,330 Hebrew subject-verb agreement pairs from MultiBLiMP
+lfm3-cpt multiblimp heb -o corpora/he/multiblimp-heb.jsonl
 ```
 
-If `heb` is listed:
+Each export streams only what it needs, so the multi-terabyte sources are not downloaded in full. Then check how
+well the tokenizer covers Hebrew:
 
 ```bash
-lfm3-cpt -p rtx3090 -c examples/hebrew-wiki.toml sft --filter language_code=heb --merge
+lfm3-cpt tokenizer-check corpora/he/wiki.train.jsonl
 ```
 
-Otherwise use any Hebrew chat dataset: `sft --dataset <hub-id> --filter ""`.
+Then prepare and train:
+
+```bash
+lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml prepare
+lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml train --merge
+```
+
+If the tokenizer verdict was "fair" or "poor", train the embeddings too, with a lower learning rate:
+
+```bash
+lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml -s train_embeddings=true train --lr 1e-4 --merge
+```
+
+`prepare` prints `train_tokens`. Divide by about 3,300 tokens/s to estimate the training time on the 3090: around
+60M tokens is about 5 hours. For a first pass, halve the budgets above. With `-s gradient_checkpointing=false` it
+is faster, if memory allows.
+
+In the results, the held-out row is all three Hebrew sources together. The "out-of-distribution" row is the
+English eval text: if it rises a lot, the replay share is too small.
+
+**Optional: Knesset protocols** (384M tokens of spoken, parliamentary Hebrew). The dataset uses a loading script,
+which current `datasets` no longer runs, so download its files and read them directly:
+
+```bash
+hf download HaifaCLGroup/KnessetCorpus --repo-type dataset \
+    --include "protocols_sentences/*" --local-dir raw/knesset
+(cd raw/knesset/protocols_sentences && unzip -q '*.zip')
+lfm3-cpt export --data-files 'raw/knesset/protocols_sentences/**/*.json*' --inspect
+```
+
+`--inspect` shows the structure of the records. A protocol holds a list of sentences: pass that list's name
+as `--field` and the sentence text's name as `--item-field`. For example, if the inspection shows
+`protocol_sentences: list[…]` with `sentence_text: str` inside:
+
+```bash
+lfm3-cpt export --data-files 'raw/knesset/protocols_sentences/**/*.json*' \
+    --field protocol_sentences --item-field sentence_text \
+    -o corpora/he/knesset --max-chars 60M --eval-docs 50
+```
+
+The new files match `corpora/he/*.train.jsonl`, so the next `prepare` includes them automatically.
+
+**Optional: HeDC4** (a cleaned Hebrew Common Crawl, 47.6 GB of CSV). Check the column name first, then export
+a slice:
+
+```bash
+lfm3-cpt export HeNLP/HeDC4 --inspect
+lfm3-cpt export HeNLP/HeDC4 --field text -o corpora/he/hedc4 --max-chars 60M --eval-docs 100
+```
+
+**Weighting the sources.** Every `*.train.jsonl` counts once. To weight one, list the files explicitly with a
+repeat factor, e.g. Wikipedia twice:
+
+```bash
+lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml \
+    -s 'train_files=corpora/he/wiki.train.jsonl@2,corpora/he/fineweb2.train.jsonl,corpora/en/fineweb-edu.train.jsonl' \
+    prepare
+```
+
+### 3.3 Stage 2 and testing
+
+```bash
+lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml sft --merge
+lfm3-cpt -c examples/hebrew-mix.toml chat --temperature 0
+```
+
+The SFT data in the config is machine-translated Alpaca. It teaches the model to answer, but expect some
+translationese. Questions whose answers you can check:
+
+| type this | meaning | a good answer contains |
+|---|---|---|
+| `מהי בירת צרפת?` | What is the capital of France? | **פריז** (Paris) |
+| `כמה זה שתים עשרה ועוד שבע?` | What is twelve plus seven? | **19** / תשע עשרה |
+| `באיזו טמפרטורה רותחים מים?` | At what temperature does water boil? | **100** |
+| `תרגם לאנגלית: "מחר בבוקר נצא מוקדם לדרך."` | Translate into English | "Tomorrow morning we'll set out early" |
+| `תן שלוש המלצות לתזונה בריאה.` | Give three tips for healthy eating. | three items, then it stops |
+
+And the fact test without generation, on the original and your model:
+
+```bash
+for m in LiquidAI/LFM3-1.7B runs/lfm3-1.7b-cpt-he/merged; do
+  lfm3-cpt rank $m --text "___ היא בירת צרפת." --candidate פריז --candidate ליון --candidate מרסיי
+done
+```
 
 ---
 

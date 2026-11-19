@@ -197,7 +197,7 @@ def run_training(
     )
     for cb in (ProgressCallback, PrinterCallback):
         trainer.remove_callback(cb)
-    trainer.add_callback(TrainingDashboard(console, tokens_per_step=cfg.tokens_per_step))
+    trainer.add_callback(TrainingDashboard(console, tokens_per_step=cfg.tokens_per_step, label="CPT"))
     trainer.add_callback(JsonlMetricsLogger(out_dir / "metrics.jsonl"))
 
     trainable, total = trainer.model.get_nb_trainable_parameters()
