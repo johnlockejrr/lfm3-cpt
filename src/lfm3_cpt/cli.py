@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -659,7 +660,17 @@ def multiblimp(lang, output, limit, tsv_path) -> None:
 @click.option("--category", "categories", multiple=True, help="Select by docCategory substring (repeatable).")
 @click.option("--exclude", "excludes", multiple=True, help="Drop books whose title/category matches (repeatable).")
 @click.option("--professional-only", is_flag=True, help="Only segments marked dataQuality=professional.")
-@click.option("--prefer-version", "prefer", multiple=True, help="Prefer editions whose title matches (repeatable).")
+@click.option(
+    "--prefer-version",
+    "prefer",
+    multiple=True,
+    help="Prefer editions (or books) whose title matches, e.g. Kaufmann, 'codex Vienna' (repeatable, in order).",
+)
+@click.option(
+    "--keep-all-editions",
+    is_flag=True,
+    help="Keep both books when Sefaria has a work twice (e.g. Tosefta X and Tosefta X (Lieberman)).",
+)
 @click.option("--stats", is_flag=True, help="Only show categories and the books/editions the selection catches.")
 @click.option("-o", "--output", "prefix", help="Writes PREFIX.train.jsonl, PREFIX.eval.jsonl, PREFIX.books.tsv.")
 @click.option("--eval-fraction", type=float, default=0.05, show_default=True, help="Share held out, by tractate.")
@@ -687,6 +698,7 @@ def sefaria(
     excludes,
     professional_only,
     prefer,
+    keep_all_editions,
     stats,
     prefix,
     eval_fraction,
@@ -709,8 +721,9 @@ def sefaria(
     \b
     Examples:
       lfm3-cpt sefaria --preset tannaitic --stats
-      lfm3-cpt sefaria --preset tannaitic -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
-      lfm3-cpt sefaria --preset responsa --eval-fraction 1 ... (see docs/RABBINIC.md)
+      lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' \\
+          -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
+      lfm3-cpt sefaria --preset responsa --eval-fraction 0.02 --max-chars 0 -o corpora/rabbinic/responsa
     """
     from .sefaria import (
         Cleaner,
@@ -720,6 +733,8 @@ def sefaria(
         iter_segments,
         library_stats,
         make_pairs,
+        plan_books,
+        work_title,
         write_jsonl,
         write_manifest,
     )
@@ -731,6 +746,11 @@ def sefaria(
         selector = Selector.from_preset(preset, titles, categories, excludes, professional_only=professional_only)
     except (ValueError, re.error) as exc:
         raise click.UsageError(str(exc)) from exc
+    for pattern in (*prefer, *eval_match):
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise click.UsageError(f"not a regular expression: {pattern!r} ({exc})") from exc
     if library_file:
         path = Path(library_file)
     else:
@@ -761,6 +781,7 @@ def sefaria(
                 seed,
                 cleaner,
                 char_budget,
+                keep_all_editions,
             )
 
     if stats:
@@ -771,20 +792,43 @@ def sefaria(
         for cat, chars in st.categories.most_common(40):
             table.add_row(cat or "—", f"{st.category_segments[cat]:,}", f"{chars / 1e6:,.1f}")
         console.print(table)
-        books = Table(title=f"Selected: {len(st.books)} books")
-        books.add_column("book")
-        books.add_column("category")
-        books.add_column("editions", justify="right")
-        books.add_column("largest edition")
-        books.add_column("M chars", justify="right")
+        try:
+            plan = plan_books(st.books, [re.compile(p) for p in prefer], keep_all_editions)
+        except re.error as exc:
+            raise click.UsageError(f"--prefer-version: {exc}") from exc
+        works: dict[str, list[str]] = {}
+        for book in sorted(plan.version):
+            works.setdefault(work_title(book), []).append(book)
+        table_w = Table(title=f"Selected: {len(works)} works ({len(plan.version)} books), the edition each would use")
+        table_w.add_column("work")
+        table_w.add_column("category")
+        table_w.add_column("books", justify="right")
+        table_w.add_column("edition used (of how many)")
+        table_w.add_column("M chars", justify="right")
         total = 0
-        for book in sorted(st.books):
-            versions = st.books[book]
-            name, chars = versions.most_common(1)[0]
+        for work, members in works.items():
+            chosen = Counter(plan.version[b] for b in members)
+            name, _ = chosen.most_common(1)[0]
+            if len(chosen) > 1:
+                name += f"  [+{len(chosen) - 1} other]"
+            n_editions = max(len(st.books[b]) for b in members)
+            chars = sum(st.books[b][plan.version[b]]["chars"] for b in members)
             total += chars
-            books.add_row(book, st.book_category.get(book, ""), str(len(versions)), name, f"{chars / 1e6:.2f}")
-        console.print(books)
-        console.print(f"≈ {total / 1e6:,.1f}M characters in the largest edition of each selected book.")
+            table_w.add_row(
+                work,
+                st.book_category.get(members[0], ""),
+                str(len(members)),
+                f"{name} ({n_editions})",
+                f"{chars / 1e6:.2f}",
+            )
+        console.print(table_w)
+        if plan.dropped:
+            shown = ", ".join(f"{b} → {k}" for b, k in list(sorted(plan.dropped.items()))[:4])
+            console.print(
+                f"{len(plan.dropped)} books left out as other editions of a kept work "
+                f"(--prefer-version decides, --keep-all-editions keeps both): {shown} …"
+            )
+        console.print(f"≈ {total / 1e6:,.1f}M characters (without vowel points), before cleaning.")
         return
 
     if not result.books:

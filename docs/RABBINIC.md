@@ -1,21 +1,26 @@
-# Tannaitic (Mishnaic) Hebrew: a second CPT stage on the Modern Hebrew model
+# Tannaitic (Mishnaic) Hebrew with LFM3
 
 > **Status: plan, not yet run.** The commands and tooling are tested; the expected numbers are not measured.
-> [HEBREW.md](HEBREW.md) is the tested recipe this builds on: its stage-1 model
-> (`runs/lfm3-1.7b-cpt-he/merged`) is the starting point here.
+> [HEBREW.md](HEBREW.md) is the tested Modern Hebrew recipe; its stage-1 model
+> (`runs/lfm3-1.7b-cpt-he/merged`) is one of the two starting points compared here.
 
-Rabbinic Hebrew is not a new language for a model that already reads Modern Hebrew: the script, most of the
-vocabulary and the trained embeddings carry over. What it has to learn is the register: participle-heavy verbs,
-`-ין` plurals, `שֶׁ־` everywhere, different particles, dense abbreviations (`א״ר`, `רז״ל`). So this is a short,
-focused stage: Tannaitic text only (Mishnah, Tosefta, the halakhic midrashim), with a little Modern Hebrew and
-English replay. Responsa are measured first and only added if they help (step 6).
+Mishnaic Hebrew is its own language stage, not an early form of Modern Hebrew, and a model trained on Modern
+Hebrew brings Modern usage with it: vocabulary, idiom, and meanings that words acquired much later. On the
+other hand it shares the script and much of the lexicon and morphology, and its embeddings have already been
+trained for Hebrew letters, which a corpus of a few million tokens can't do on its own. Which effect wins is an
+empirical question, so step 5 trains **from both starting points on the same data** and compares them on held-out
+tractates: the original LFM3, and the Modern Hebrew model.
+
+The corpus is Tannaitic text only (Mishnah, Tosefta, the halakhic midrashim), with a little English replay and,
+for the Modern Hebrew start, a little Modern Hebrew replay. Responsa are measured first and only added if they
+help (step 6).
 
 - [0. What you need](#0-what-you-need)
 - [1. Look at the library before exporting](#1-look-at-the-library-before-exporting)
 - [2. Export and clean the Tannaitic corpus](#2-export-and-clean-the-tannaitic-corpus)
 - [3. Replay slices](#3-replay-slices)
-- [4. Before training: how much Mishnaic does the model already know?](#4-before-training-how-much-mishnaic-does-the-model-already-know)
-- [5. Train](#5-train)
+- [4. Before training: how much Mishnaic does each model already know?](#4-before-training-how-much-mishnaic-does-each-model-already-know)
+- [5. Train from both starting points](#5-train-from-both-starting-points)
 - [6. Check, and decide about the responsa](#6-check-and-decide-about-the-responsa)
 - [7. Chat again (stage 2)](#7-chat-again-stage-2)
 - [8. Limits](#8-limits)
@@ -38,35 +43,43 @@ editions listed in the `.books.tsv` manifest.
 ## 1. Look at the library before exporting
 
 ```bash
-lfm3-cpt sefaria --preset tannaitic --stats
+lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' --stats
 ```
 
-The first table lists Sefaria's categories by size. The second lists every book the selection catches, how many
-editions it has, and the largest one. The `tannaitic` preset selects titles starting with *Mishnah*, *Pirkei
+The first table lists Sefaria's categories by size. The second lists every work the selection catches and the
+edition the export would use for it. The `tannaitic` preset selects titles starting with *Mishnah*, *Pirkei
 Avot*, *Tosefta*, *Mekhilta*, *Sifra*, *Sifrei*, *Midrash Tannaim*. It leaves out commentaries (`… on …`),
 *Mishnah Berurah* (20th-century halakhah, despite its name), introductions and Lieberman's *Tosefta Kifshutah*.
+Sefaria stores Sifra as one "book" per chapter; these are shown (and held out) by parashah.
 
-Check the list. Things to decide:
+The Tannaitic part of Sefaria is about **5–6M characters** (without vowel points), roughly 3–4M tokens.
 
-- **Two Tosefta editions.** Sefaria has the Vilna text (*Tosefta Berakhot*) and Lieberman's critical edition
-  (*Tosefta Berakhot (Lieberman)*), which covers only Zeraim to Nezikin. Both are kept unless you exclude one.
-  The export drops segments whose text (without vowels and punctuation) is identical, but different spellings
-  survive as near-duplicates. To prefer Lieberman where it exists, exclude the Vilna books for those orders by
-  name, e.g. `--exclude '^Tosefta (Berakhot|Peah|Demai)$'`.
+Things to decide:
+
+- **Which Mishnah.** Sefaria has up to six editions per tractate: Dan Be'eri's edition of the **Kaufmann
+  manuscript** (vocalized, the Palestinian tradition and its plene spellings), *Torat Emet*, and the Vilna print.
+  Without a preference the export takes the largest edition, counted without vowel points so that pointed and
+  plain editions compare fairly. For Mishnaic Hebrew as it was written, Kaufmann is the natural choice:
+  `--prefer-version Kaufmann`. Check in the table that every tractate then shows Kaufmann, and that its size
+  matches the other tractates' (a much smaller Kaufmann text would mean an incomplete edition on Sefaria).
+- **Which Tosefta.** Sefaria has most tractates twice: Lieberman's edition of the Vienna codex (*Tosefta
+  Berakhot (Lieberman)*, Zeraim to Nezikin) and the Machon Mamre/Vilna text (*Tosefta Berakhot*). Only one
+  of each pair is kept (the table says how many were left out); `--prefer-version 'codex Vienna'` makes it
+  Lieberman's wherever it exists. `--keep-all-editions` keeps both.
 - **Anything unexpected.** Add `--exclude REGEX` (titles and categories) or `--title REGEX` to fix the selection.
   Rerun `--stats` until the list is right.
 
 ## 2. Export and clean the Tannaitic corpus
 
 ```bash
-lfm3-cpt sefaria --preset tannaitic --strip-punctuation \
-    -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
+lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' \
+    --strip-punctuation -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
 ```
 
 What it does:
 
-- **One edition per book:** the professional one with the most text (or the first matching `--prefer-version`,
-  e.g. `--prefer-version 'Torat Emet'`). Pointed and unpointed duplicates of the same text are not both kept.
+- **One edition per work,** as shown by `--stats`. Every choice is listed in `tannaitic.books.tsv`, including the
+  books left out as other editions (`dropped`).
 - **Cleaning,** with every change counted in the output table:
   - HTML tags, Sefaria footnotes, entities, invisible bidi/control characters, Hebrew presentation forms, legacy
     markup codes (`@11`) and note markers (`*`, `[3]`, `(4)`);
@@ -117,15 +130,15 @@ lfm3-cpt -c examples/rabbinic-tannaitic.toml tokenizer-check corpora/rabbinic/ta
 
 ## 3. Replay slices
 
-The Tannaitic corpus is small: the export table prints its size (call it *T* characters). Small corpora are
-repeated (`@3` in the config), and the replay is sized from *T*: about half of *T* in Modern Hebrew and a third in
-English. For example, with T ≈ 8M characters:
+The Tannaitic corpus is small: the export table prints its training size (call it *T* characters, about 5M).
+Small corpora are repeated (`@3` in the config), and the replay is sized from *T*: about half of *T* in Modern
+Hebrew and a third in English. With T ≈ 5M characters:
 
 ```bash
 lfm3-cpt export wikimedia/wikipedia --subset 20231101.he --title-field title \
-    -o corpora/rabbinic/replay-he --max-chars 4M --eval-docs 0 --seed 7
+    -o corpora/rabbinic/replay-he --max-chars 2.5M --eval-docs 0 --seed 7
 lfm3-cpt export HuggingFaceFW/fineweb-edu --subset sample-10BT \
-    -o corpora/rabbinic/replay-en --max-chars 3M --eval-docs 0 --seed 7
+    -o corpora/rabbinic/replay-en --max-chars 1.7M --eval-docs 0 --seed 7
 ```
 
 Then `examples/rabbinic-tannaitic.toml` reads exactly these files. Prepare the data:
@@ -134,45 +147,60 @@ Then `examples/rabbinic-tannaitic.toml` reads exactly these files. Prepare the d
 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml prepare
 ```
 
-## 4. Before training: how much Mishnaic does the model already know?
+## 4. Before training: how much Mishnaic does each model already know?
 
-`train` measures its starting model (the Modern Hebrew one) automatically. To see what stage 1 alone did for
-Mishnaic Hebrew, score the original model too:
+Score both starting points on the held-out tractates and the pairs (a few minutes each):
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml evaluate LiquidAI/LFM3-1.7B
+for m in LiquidAI/LFM3-1.7B runs/lfm3-1.7b-cpt-he/merged; do
+  CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml evaluate $m
+done
 ```
 
-Compare the two Tannaitic perplexities. If the Modern Hebrew model is already close to its Modern Hebrew
-perplexity (5.8), the register is mostly known and a short stage is enough. If it is far, the corpus may be too
-small, and that is the case for adding responsa (step 6).
+This is already informative: it shows how much (or how little) Modern Hebrew training helps with reading the
+Mishnah before any Mishnaic training.
 
-## 5. Train
+## 5. Train from both starting points
+
+Same data, same settings, only the starting model differs (about 1 hour each for T ≈ 5M: 3 × 5M + 4M replay
+characters ≈ 13M tokens at ~3,300 tokens/s):
 
 ```bash
+# A: from the Modern Hebrew model (the config's default)
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml train --merge
+
+# B: from the original LFM3; its Hebrew embeddings are untrained, so they are trained here
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml \
+    -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true \
+    -s output_dir=runs/lfm3-1.7b-cpt-rabbinic-base train --merge
 ```
 
 The settings, and why:
 
-- `model_id = runs/lfm3-1.7b-cpt-he/merged`: continue from the stage-1 model, not from the chat model. CPT
-  would erode the chat skills anyway, and stage 2 only takes 15 minutes to redo (step 7).
-- `train_embeddings = false`: the embeddings were trained in stage 1 for the same script. A few million tokens
-  would mostly overfit 262M embedding parameters.
+- Both continue from a base model, not a chat model. CPT erodes chat skills anyway, and stage 2 takes 15 minutes
+  to redo (step 7).
+- A keeps the embeddings frozen: they were trained in stage 1 for the same script, and a few million tokens would
+  mostly overfit 262M embedding parameters. B has to train them; with this little text that is B's handicap.
 - `learning_rate = 1e-4`, one pass over a mix in which the Tannaitic text appears three times.
+- The Modern Hebrew replay is in both runs, so that the start is the only difference. For a stricter B (no Modern
+  Hebrew at all), remove `replay-he` from `train_files` in a copy of the config.
 
-At about 3,300 tokens/s on the RTX 3090 and ~1.5 characters per token, T ≈ 8M characters (3 × 8M + 7M replay
-≈ 21M tokens) is roughly 1.5–2 hours.
+**How to compare them** (`lfm3-cpt report runs/lfm3-1.7b-cpt-rabbinic runs/lfm3-1.7b-cpt-rabbinic-base`):
+
+- held-out tractates' perplexity and pair accuracy: the main result;
+- the same `generate` and `rank` checks as in step 6, looking for Modern Hebrew words and idioms in A's
+  continuations. That is the concern a perplexity number can't show.
 
 ## 6. Check, and decide about the responsa
 
-The results table answers three questions:
+Run these checks on both models (A: `runs/lfm3-1.7b-cpt-rabbinic/merged`, B:
+`runs/lfm3-1.7b-cpt-rabbinic-base/merged`); the commands show A. The results table answers three questions:
 
 | row | good sign |
 |---|---|
 | held-out perplexity (unseen tractates) | clearly down from the starting model |
 | minimal-pair accuracy (`word_order`, `word_substitution`) | up |
-| out-of-distribution perplexity (Modern Hebrew Wikipedia) | about the same; a rise of 10% or more means the replay is too small |
+| out-of-distribution perplexity (Modern Hebrew Wikipedia) | for A: about the same (a rise of 10% or more means the replay is too small); for B it only shows how much Modern Hebrew it picked up |
 
 English, as in HEBREW.md:
 
@@ -204,7 +232,7 @@ and score both models on it:
 lfm3-cpt sefaria --preset responsa --stats      # check the selection first
 lfm3-cpt sefaria --preset responsa --strip-punctuation --eval-fraction 0.02 --max-chars 0 \
     -o corpora/rabbinic/responsa
-for m in runs/lfm3-1.7b-cpt-he/merged runs/lfm3-1.7b-cpt-rabbinic/merged; do
+for m in runs/lfm3-1.7b-cpt-he/merged runs/lfm3-1.7b-cpt-rabbinic/merged runs/lfm3-1.7b-cpt-rabbinic-base/merged; do
   CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml \
       -s ood_files=corpora/rabbinic/responsa.eval.jsonl -s data_dir=data/rabbinic-resp evaluate $m --no-grammar
 done
@@ -223,7 +251,7 @@ lfm3-cpt sefaria --preset responsa --strip-punctuation --eval-fraction 0.02 --ma
 
 ## 7. Chat again (stage 2)
 
-Rerun the final SFT from HEBREW.md § 4 with `-s model_id=runs/lfm3-1.7b-cpt-rabbinic/merged`. It uses the same
+Rerun the final SFT from HEBREW.md § 4 with `-s model_id=` set to the better of the two merged models. It uses the same
 data and takes about 15 minutes. Sefaria also publishes
 [Rabbinic-Hebrew-English-Pairs](https://huggingface.co/datasets/Sefaria/Rabbinic-Hebrew-English-Pairs):
 real Rabbinic Hebrew → English translations, which suit stage 2 better than distilled pairs. That is the next

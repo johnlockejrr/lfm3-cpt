@@ -134,9 +134,41 @@ _COLLECTION_RE = re.compile(r"^(Mishnah|Tosefta|Jerusalem Talmud|Babylonian Talm
 _EDITION_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
+_PART_RE = re.compile(r",\s+(Chapter|Section|Mechilta d'Miluim)\s+\d+\*?$")
+# Sefaria spells some tractates differently in different collections.
+_KEY_ALIASES = {
+    "oktsin": "oktzin",
+    "tohorot": "tahorot",
+    "kelimkamma": "kelim",
+    "kelimmetzia": "kelim",
+    "kelimbatra": "kelim",
+}
+
+
+def work_title(book: str) -> str:
+    """'Sifra, Emor, Chapter 3' -> 'Sifra, Emor': works that Sefaria splits into one 'book' per chapter."""
+    return _PART_RE.sub("", book)
+
+
+def _letters(s: str) -> str:
+    key = re.sub(r"[^a-z0-9,]", "", s.lower()).replace(",", " ").strip()
+    return _KEY_ALIASES.get(key, key)
+
+
+def edition_key(book: str) -> str:
+    """'Tosefta Taanit (Lieberman)' and "Tosefta Ta'anit" -> the same key: two editions of one work."""
+    return _letters(_EDITION_RE.sub("", book))
+
+
 def tractate_key(book: str) -> str:
-    """'Tosefta Berakhot (Lieberman)' and 'Mishnah Berakhot' -> 'berakhot': parallel texts share a key."""
-    return _COLLECTION_RE.sub("", _EDITION_RE.sub("", book)).strip().lower()
+    """'Tosefta Berakhot (Lieberman)' and 'Mishnah Berakhot' -> 'berakhot': parallel texts share a key, so
+    they are held out together. Sifra is held out by parashah."""
+    return _letters(_COLLECTION_RE.sub("", _EDITION_RE.sub("", work_title(book))))
+
+
+def bare_len(text: str) -> int:
+    """Length without markup, vowel points or cantillation, so pointed and plain editions compare fairly."""
+    return len(_POINTS_RE.sub("", _TAG_RE.sub("", text)))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -283,7 +315,8 @@ class LibraryStats:
     lines: int = 0
     categories: Counter = field(default_factory=Counter)  # category -> chars
     category_segments: Counter = field(default_factory=Counter)
-    books: dict[str, Counter] = field(default_factory=lambda: defaultdict(Counter))  # book -> version -> chars
+    # book -> version -> {"quality", "chars"} (chars without vowel points), for the selected works
+    books: dict[str, dict[str, dict[str, Any]]] = field(default_factory=lambda: defaultdict(dict))
     book_category: dict[str, str] = field(default_factory=dict)
 
 
@@ -297,7 +330,8 @@ def library_stats(segments: Iterable[Segment], selector: Selector | None = None)
         if selector is not None:
             book = split_ref(seg.ref)[0]
             if selector.accepts(seg, book):
-                st.books[book][seg.version] += len(seg.text)
+                v = st.books[book].setdefault(seg.version, {"quality": seg.quality, "chars": 0})
+                v["chars"] += bare_len(seg.text)
                 st.book_category.setdefault(book, seg.category)
     return st
 
@@ -337,6 +371,43 @@ def _choose_version(versions: dict[str, dict[str, Any]], prefer: list[re.Pattern
     return max(versions, key=score)
 
 
+@dataclass
+class Plan:
+    version: dict[str, str]  # kept book -> chosen edition
+    dropped: dict[str, str]  # book left out -> the book kept instead (another edition of the same work)
+
+
+def plan_books(
+    books: dict[str, dict[str, dict[str, Any]]], prefer: list[re.Pattern], keep_all_editions: bool = False
+) -> Plan:
+    """Choose one edition per book and, where Sefaria has the same work as two books (Tosefta X and Tosefta X
+    (Lieberman)), one of the books. `prefer` patterns are matched against edition and book titles, earliest
+    pattern first; otherwise professional quality, then the larger text (counted without vowel points)."""
+    version = {b: _choose_version(vs, prefer) for b, vs in books.items()}
+    if keep_all_editions:
+        return Plan(version, {})
+    groups: dict[str, list[str]] = defaultdict(list)
+    for b in books:
+        groups[edition_key(b)].append(b)
+    dropped: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+
+        def score(b: str) -> tuple:
+            v = books[b][version[b]]
+            names = f"{version[b]} {b}"
+            preferred = next((i for i, p in enumerate(prefer) if p.search(names)), len(prefer))
+            return (-preferred, v["quality"] == "professional", v["chars"], b)
+
+        keep = max(members, key=score)
+        for b in members:
+            if b != keep:
+                dropped[b] = keep
+                version.pop(b)
+    return Plan(version, dropped)
+
+
 def build_corpus(
     segments: Iterable[Segment],
     selector: Selector,
@@ -348,6 +419,7 @@ def build_corpus(
     seed: int = 42,
     cleaner: Cleaner | None = None,
     max_train_chars: int | None = None,
+    keep_all_editions: bool = False,
 ) -> SefariaExport:
     prefer = [re.compile(p) for p in prefer_versions]
     cleaner = cleaner or Cleaner()
@@ -361,16 +433,17 @@ def build_corpus(
         if not selector.accepts(seg, book):
             continue
         v = store[book].setdefault(seg.version, {"quality": seg.quality, "chars": 0, "segments": []})
-        v["chars"] += len(seg.text)
+        v["chars"] += bare_len(seg.text)
         v["segments"].append((key, chapter, seg.text))  # cleaned below, for the chosen edition only
         categories.setdefault(book, seg.category)
 
+    plan = plan_books(store, prefer, keep_all_editions)
     seen: set[str] = set()
     docs_by_book: dict[str, list[dict[str, str]]] = {}
     books: list[BookInfo] = []
-    for book in sorted(store):
+    for book in sorted(plan.version):
         versions = store[book]
-        name = _choose_version(versions, prefer)
+        name = plan.version[book]
         chosen = versions[name]
         info = BookInfo(book, categories[book], name, chosen["quality"], len(versions))
         chapters: dict[tuple[str, ...], list[tuple]] = defaultdict(list)
@@ -415,6 +488,10 @@ def build_corpus(
                 used += info.chars
     train = [d for b in books if b.split == "train" for d in docs_by_book[b.book]]
     evaluation = [d for b in books if b.split == "eval" for d in docs_by_book[b.book]]
+    for book, kept in sorted(plan.dropped.items()):
+        books.append(
+            BookInfo(book, categories[book], f"(other edition kept: {kept})", "", len(store[book]), split="dropped")
+        )
     return SefariaExport(train, evaluation, books, read)
 
 

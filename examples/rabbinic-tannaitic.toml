@@ -5,9 +5,11 @@
 #   corpora/rabbinic/replay-en.train.jsonl         a slice of FineWeb-Edu                  (keeps English)
 #   corpora/rabbinic/pairs.jsonl                   word-order / word-choice pairs from held-out tractates
 #
-# The Tannaitic corpus is small (a few million tokens), so it is repeated (@3) and the replay slices are sized
-# from it: roughly half its size in Modern Hebrew and a third in English (see docs/RABBINIC.md, step 2).
-model_id = "runs/lfm3-1.7b-cpt-he/merged"   # the stage-1 Modern Hebrew model, not the chat model
+# The Tannaitic corpus is small (about 5M characters, 3-4M tokens), so it is repeated (@3) and the replay slices
+# are sized from it: roughly half its size in Modern Hebrew and a third in English (docs/RABBINIC.md § 3).
+# Start A: the stage-1 Modern Hebrew model (not the chat model). Start B, from the original model, is the same
+# config with -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true -s output_dir=... (docs/RABBINIC.md § 5).
+model_id = "runs/lfm3-1.7b-cpt-he/merged"
 target_language = "he"
 data_dir = "data/rabbinic"
 output_dir = "runs/lfm3-1.7b-cpt-rabbinic"
@@ -29,8 +31,8 @@ strip_marks = ["hebrew_cantillation", "hebrew_points"]
 grammar_files = ["corpora/rabbinic/pairs.jsonl"]
 
 [lora]
-# The embeddings were trained in stage 1 and the script is the same: keep them frozen. With a few million
-# tokens, training 262M embedding parameters would mostly overfit.
+# Start A: the embeddings were trained in stage 1 for the same script, so keep them frozen; with a few million
+# tokens, training 262M embedding parameters would mostly overfit. Start B has to train them (-s ...=true).
 train_embeddings = false
 
 [training]

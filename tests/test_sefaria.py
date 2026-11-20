@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,11 +14,14 @@ from lfm3_cpt.sefaria import (
     Cleaner,
     Selector,
     build_corpus,
+    edition_key,
     iter_segments,
     library_stats,
     make_pairs,
+    plan_books,
     split_ref,
     tractate_key,
+    work_title,
 )
 
 M1 = "מאימתי קורין את שמע בערבית משעה שהכהנים נכנסים לאכול בתרומתן עד סוף האשמורה הראשונה דברי ר' אליעזר"
@@ -39,6 +43,12 @@ def _rows() -> list[dict]:
     rows.append(row("Mishnah Berakhot 1:1", "מֵאֵימָתַי קוֹרִין", version="Vocalized", quality="user"))
     rows.append(row("Tosefta Berakhot (Lieberman) 1:1", M2 + ' רז"ל', version="Lieberman", cat="Tosefta"))
     rows.append(row("Tosefta Berakhot (Lieberman) 1:2", M3, version="Lieberman", cat="Tosefta"))
+    # the same work in a second "book" (Vilna), a little larger: dropped unless preferred
+    rows.append(row("Tosefta Berakhot 1:1", M2 + ' ותו רז"ל', version="Vilna", cat="Tosefta"))
+    rows.append(row("Tosefta Berakhot 1:2", M3 + " ותו", version="Vilna", cat="Tosefta"))
+    # Sifra: one Sefaria "book" per chapter
+    rows.append(row("Sifra, Emor, Chapter 1 1", M3 + " א", version="Venice 1545", cat="Midrash"))
+    rows.append(row("Sifra, Emor, Chapter 2 1", M3 + " ב", version="Venice 1545", cat="Midrash"))
     rows.append(row("Bartenura on Mishnah Berakhot 1:1:1", "פירוש", cat="Mishnah/Commentary"))
     rows.append(row("Mishnah Berurah 1:1", "הלכה", cat="Halakhah"))
     rows.append(row("Shabbat 2a:1", "גמרא", cat="Talmud"))
@@ -69,6 +79,30 @@ def test_split_ref_and_order():
 
 def test_tractate_key_joins_parallels():
     assert tractate_key("Mishnah Berakhot") == tractate_key("Tosefta Berakhot (Lieberman)") == "berakhot"
+    assert tractate_key("Mishnah Ta'anit") == tractate_key("Tosefta Taanit (Lieberman)")
+    assert tractate_key("Mishnah Tahorot") == tractate_key("Tosefta Tohorot")
+    assert tractate_key("Sifra, Emor, Chapter 3") == tractate_key("Sifra, Emor, Section 2*") == "sifra emor"
+    assert work_title("Sifra, Emor, Chapter 3") == "Sifra, Emor"
+    assert edition_key("Tosefta Ta'anit") == edition_key("Tosefta Taanit (Lieberman)")
+    assert edition_key("Tosefta Berakhot") != edition_key("Mishnah Berakhot")
+
+
+def test_plan_books_fair_and_one_edition():
+    books = {
+        "Mishnah Berakhot": {
+            "Kaufmann": {"quality": "professional", "chars": 90},
+            "Vilna": {"quality": "professional", "chars": 100},
+        },
+        "Tosefta Berakhot": {"Vilna": {"quality": "professional", "chars": 120}},
+        "Tosefta Berakhot (Lieberman)": {"codex Vienna": {"quality": "professional", "chars": 100}},
+    }
+    plan = plan_books(books, [])
+    assert plan.version["Mishnah Berakhot"] == "Vilna"
+    assert plan.dropped == {"Tosefta Berakhot (Lieberman)": "Tosefta Berakhot"}
+    plan = plan_books(books, [re.compile("Kaufmann"), re.compile("Vienna")])
+    assert plan.version["Mishnah Berakhot"] == "Kaufmann"
+    assert plan.dropped == {"Tosefta Berakhot": "Tosefta Berakhot (Lieberman)"}
+    assert plan_books(books, [], keep_all_editions=True).dropped == {}
 
 
 def test_cleaner_native_marks():
@@ -107,12 +141,16 @@ def test_build_corpus(library: Path):
         iter_segments(library), Selector.from_preset("tannaitic"), min_chars=10, eval_match=["Berakhot"]
     )
     books = {b.book: b for b in result.books}
-    assert set(books) == {f"Mishnah {t}" for t in ["Berakhot", "Shabbat", "Eruvin", "Pesachim", "Yoma", "Sukkah"]} | {
-        "Tosefta Berakhot (Lieberman)"
+    kept = {b for b, info in books.items() if info.split != "dropped"}
+    assert kept == {f"Mishnah {t}" for t in ["Berakhot", "Shabbat", "Eruvin", "Pesachim", "Yoma", "Sukkah"]} | {
+        "Tosefta Berakhot",
+        "Sifra, Emor, Chapter 1",
+        "Sifra, Emor, Chapter 2",
     }
+    assert books["Tosefta Berakhot (Lieberman)"].split == "dropped"
     assert books["Mishnah Berakhot"].version == "Torat Emet" and books["Mishnah Berakhot"].versions == 2
     # Mishnah and Tosefta Berakhot are held out together
-    assert books["Mishnah Berakhot"].split == books["Tosefta Berakhot (Lieberman)"].split == "eval"
+    assert books["Mishnah Berakhot"].split == books["Tosefta Berakhot"].split == "eval"
     assert books["Mishnah Shabbat"].split == "train"
     # one document per chapter, chapters and segments in reading order
     shabbat = [d for d in result.train if d["source"].startswith("Mishnah Shabbat")]
@@ -126,7 +164,7 @@ def test_build_corpus(library: Path):
 def test_build_corpus_fraction_keeps_training(library: Path):
     result = build_corpus(iter_segments(library), Selector.from_preset("tannaitic"), min_chars=10, eval_fraction=0.2)
     splits = {b.split for b in result.books}
-    assert splits == {"train", "eval"}
+    assert splits == {"train", "eval", "dropped"}
     assert result.eval and result.train
 
 
@@ -135,6 +173,8 @@ def test_library_stats(library: Path):
     assert st.lines == len(_rows())
     assert st.categories["Talmud"] > 0
     assert len(st.books["Mishnah Berakhot"]) == 2
+    # chars are counted without vowel points: the short pointed edition is the smaller one
+    assert st.books["Mishnah Berakhot"]["Vocalized"]["chars"] == len("מאימתי קורין")
 
 
 def test_make_pairs():
@@ -180,8 +220,9 @@ def test_budget_keeps_whole_books(library: Path):
         max_train_chars=total // 3,
     )
     used = [b for b in part.books if b.split == "train"]
-    assert 0 < len(used) < len(part.books)
-    assert {d["source"].rsplit(" ", 1)[0] for d in part.train} <= {b.book for b in used}
+    assert 0 < len(used) < len([b for b in part.books if b.split != "dropped"])
+    used_books = {b.book for b in used}
+    assert all(any(d["source"].startswith(b) for b in used_books) for d in part.train)
     assert sum(len(d["text"]) for d in part.train) <= 1.2 * total // 3 + 1
 
 
