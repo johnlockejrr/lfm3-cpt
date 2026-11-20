@@ -1264,9 +1264,16 @@ def cloze_build(
     "--output", type=click.Path(dir_okay=False), help="Per-item results (JSONL), one line per model and item."
 )
 @click.option("--show", type=int, default=5, show_default=True, help="Print this many misses per model.")
+@click.option(
+    "--pmi",
+    "pmis",
+    type=float,
+    multiple=True,
+    help="Also score with -α·log p(word alone) (repeatable: --pmi 0.5 --pmi 1); 0 = raw probability.",
+)
 @click.option("--batch-size", type=int, default=32, show_default=True)
 @pass_ctx
-def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
+def cloze_score(obj: Ctx, items_file, models, output, show, pmis, batch_size) -> None:
     """Score models on a gap-filling items file."""
     from .cloze import BUCKETS, score_items, summarize
     from .evaluation import sentence_logprobs
@@ -1276,12 +1283,16 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
     if not items:
         raise click.ClickException(f"{items_file} has no items")
     targets = list(models) or [default_lm_model(cfg)]
-    summaries: dict[str, dict[str, Any]] = {}
+    alphas = [0.0, *(a for a in pmis if a)]
+    summaries: dict[str, dict[str, Any]] = {}  # column label -> summary
+    columns: list[str] = []
     out_fh = open(output, "w", encoding="utf-8") if output else None  # noqa: SIM115
     try:
         for target in targets:
             model, tokenizer = _load_lm(cfg, target)
             total = sum(len(it["candidates"]) for it in items)
+            if len(alphas) > 1:
+                total += len({c for it in items for c in it["candidates"]})
             with Progress(
                 TextColumn("{task.description}"),
                 BarColumn(),
@@ -1291,16 +1302,29 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
             ) as bar:
                 task = bar.add_task(f"scoring {Path(target).name or target}", total=total)
 
-                def logprob_fn(texts: list[str], model=model, tokenizer=tokenizer, task=task) -> list[float]:
-                    return sentence_logprobs(
-                        model, tokenizer, texts, batch_size, progress=lambda k: bar.advance(task, k)
-                    )
+                cache: dict[str, float] = {}
+
+                def logprob_fn(
+                    texts: list[str], model=model, tokenizer=tokenizer, task=task, cache=cache
+                ) -> list[float]:
+                    todo = sorted({t for t in texts if t not in cache})
+                    if todo:
+                        got = sentence_logprobs(
+                            model, tokenizer, todo, batch_size, progress=lambda k: bar.advance(task, k)
+                        )
+                        cache.update(zip(todo, got, strict=True))
+                    return [cache[t] for t in texts]
 
                 try:
-                    results = score_items(logprob_fn, items)
+                    by_alpha = {a: score_items(logprob_fn, items, pmi=a) for a in alphas}
                 except ValueError as exc:
                     raise click.ClickException(str(exc)) from exc
-            summaries[target] = summarize(results)
+            name = Path(target).parent.name if Path(target).name in {"merged", "adapter"} else target
+            for a, res in by_alpha.items():
+                label = name if len(alphas) == 1 else f"{name}\nα={a:g}"
+                summaries[label] = summarize(res)
+                columns.append(label)
+            results = by_alpha[0.0]
             misses = [r for r in results if r["rank"] > 1][:show]
             if misses:
                 console.print(f"[bold]Misses of {target}[/bold] (answer → model's choice):", highlight=False)
@@ -1311,8 +1335,9 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
                         highlight=False,
                     )
             if out_fh:
-                for r in results:
-                    out_fh.write(json.dumps({"model": target, **r}, ensure_ascii=False) + "\n")
+                for a, res in by_alpha.items():
+                    for r in res:
+                        out_fh.write(json.dumps({"model": target, "pmi": a, **r}, ensure_ascii=False) + "\n")
             model = tokenizer = None
             _free_memory()
     finally:
@@ -1321,9 +1346,9 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
 
     table = Table(title=f"Gap filling: {items_file}", header_style="bold")
     table.add_column("metric")
-    for t in targets:
-        table.add_column(Path(t).parent.name if Path(t).name in {"merged", "adapter"} else t, justify="right")
-    first = summaries[targets[0]]
+    for col in columns:
+        table.add_column(col, justify="right")
+    first = summaries[columns[0]]
     rows: list[tuple[str, Callable[[dict[str, Any]], str]]] = [
         ("items", lambda s: f"{s['items']:,}"),
         ("candidates per item", lambda s: f"{s['candidates']:.1f}"),
@@ -1347,7 +1372,7 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
             (f"  beats {kind} options (pairwise)", lambda s, kind=kind: f"{s['pairwise'].get(kind, (0, 0))[0]:.1%}")
         )
     for label, fmt in rows:
-        table.add_row(label, *(fmt(summaries[t]) for t in targets))
+        table.add_row(label, *(fmt(summaries[c]) for c in columns))
     console.print(table)
     if output:
         console.print(f"📝 {output}")
@@ -1368,7 +1393,16 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
     help="Also try every word of this corpus that fits (single-word gaps; default: the first train_files entry).",
 )
 @click.option("--no-vocab", is_flag=True, help="Don't take candidates from the corpus.")
-@click.option("--max-vocab", type=int, default=2000, show_default=True, help="At most this many corpus words.")
+@click.option(
+    "--max-vocab", type=int, default=50_000, show_default=True, help="At most this many corpus words (most frequent)."
+)
+@click.option(
+    "--pmi",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Subtract α·log p(filler alone): 0 = raw probability, 1 = mutual information; corrects the pull of common words.",
+)
 @click.option("--samples", type=int, default=64, show_default=True, help="Model continuations to collect words from.")
 @click.option("--temperature", type=float, default=1.0, show_default=True)
 @click.option("--top", type=int, default=20, show_default=True)
@@ -1389,6 +1423,7 @@ def restore(
     vocab_files,
     no_vocab,
     max_vocab,
+    pmi,
     samples,
     temperature,
     top,
@@ -1454,12 +1489,13 @@ def restore(
             max_vocab,
             gap,
             norm,
+            pmi,
         )
     rows = result["rows"]
     c = result["counts"]
     console.print(
         f"🧩 {len(rows)} fillers fit ({c['model']} from {samples} model samples, {c['corpus']} from the corpus, "
-        f"{c['given']} given) • scored with {target}",
+        f"{c['given']} given) • scored with {target}" + (f" • pmi α={pmi:g}" if pmi else ""),
         highlight=False,
     )
     if not rows:

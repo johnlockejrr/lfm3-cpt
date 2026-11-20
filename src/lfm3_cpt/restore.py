@@ -107,9 +107,10 @@ def restore(
     sample_fn: Callable[[str], list[str]] | None = None,
     vocab: Counter | None = None,
     given: Sequence[str] = (),
-    max_vocab: int = 2000,
+    max_vocab: int = 50_000,
     gap: str = GAP,
     norm: Callable[[str], str] = lambda s: s,
+    pmi: float = 0.0,
 ) -> dict[str, Any]:
     """Collect, filter and rank fillers. Returns the ranked rows and how many candidates each source gave."""
     left, right = split_gap(text, gap)
@@ -142,10 +143,12 @@ def restore(
     fillers = list(sources)
     texts = [" ".join(x for x in (left, f, right) if x) for f in fillers]
     scores = logprob_fn(texts)
+    priors = dict(zip(fillers, logprob_fn(fillers), strict=True)) if pmi else {}
     rows = [
         {
             "filler": f,
-            "logprob": s,
+            "logprob": s - pmi * priors[f] if pmi else s,
+            "raw_logprob": s,
             "letters": letters(f),
             "sources": sorted(sources[f]),
             "sampled": seen.get(f, 0),

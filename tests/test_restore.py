@@ -99,3 +99,12 @@ def test_cli_restore(tmp_path: Path, tiny_model_dir: str):
     assert {"נפרעין", "מוציאין", "משתלמין", "גובין"} <= fillers and "אין" not in fillers  # 3 letters: too short
     out = CliRunner().invoke(cli, [*base, "restore", tiny_model_dir, "--text", "no gap", "--samples", "0"])
     assert out.exit_code != 0 and "gap marker" in out.output
+
+
+def test_restore_pmi_reorders():
+    lp = {"אין על מהן": -9.0, "אין נפרעין מהן": -10.0, "על": -3.0, "נפרעין": -9.0}
+    fn = lambda texts: [lp[t] for t in texts]  # noqa: E731
+    raw = restore("אין ___ מהן", Constraints(), fn, given=["על", "נפרעין"])
+    pmi = restore("אין ___ מהן", Constraints(), fn, given=["על", "נפרעין"], pmi=1.0)
+    assert raw["rows"][0]["filler"] == "על" and pmi["rows"][0]["filler"] == "נפרעין"
+    assert pmi["rows"][0]["raw_logprob"] == -10.0 and pmi["rows"][0]["logprob"] == -1.0

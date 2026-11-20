@@ -299,6 +299,10 @@ lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic
   (`model ×12`). A filler found only in the corpus is one the model would not have thought of, but still prefers.
 - The score is the probability of the whole text, which favours shorter fillers: compare candidates of similar
   length (the letter constraint does that for you).
+- Raw probability also favours *common* words (`על`, `אבל`, `אדם`) over the rare word the passage needs. `--pmi α`
+  subtracts α times the filler's probability on its own; `cloze score … --pmi 0.5 --pmi 1` shows which α helps
+  on the benchmark (one column per α, all from one scoring pass), and that α is the one to use in `restore`.
+- Give as much surrounding text as you have: the words after the gap count as much as those before it.
 - On the gap-filling benchmark this model picks the right word among 8 plausible ones 55% of the time, and has
   it in its top 3 85% of the time: read the top of the list as suggestions to check, not as an answer.
 

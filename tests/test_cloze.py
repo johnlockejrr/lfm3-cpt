@@ -139,3 +139,34 @@ def test_lenient_prefix_variants():
     scores = {"וקיבל הילך וזרק": -2.0, "וקיבל והילך וזרק": -1.0, "וקיבל שחט וזרק": -3.0}
     s = summarize(score_items(lambda t: [scores[x] for x in t], items))
     assert s["top1"] == 0.0 and s["top1_lenient"] == 1.0
+
+
+def test_pmi_corrects_frequent_words():
+    # "על" is likely everywhere; in context "בבית" fits better once its own probability is divided out
+    items = [{"id": 1, "text": f"אלא {GAP} הבליעה", "answer": "בבית", "candidates": ["בבית", "על"], "kinds": {}}]
+    lp = {"אלא בבית הבליעה": -10.0, "אלא על הבליעה": -9.0, "בבית": -8.0, "על": -3.0}
+    raw = summarize(score_items(lambda t: [lp[x] for x in t], items))
+    pmi = summarize(score_items(lambda t: [lp[x] for x in t], items, pmi=1.0))
+    assert raw["top1"] == 0.0 and pmi["top1"] == 1.0  # -10+8 = -2 beats -9+3 = -6
+
+
+def test_cli_cloze_score_pmi_columns(tmp_path: Path, tiny_model_dir: str):
+    items = tmp_path / "items.jsonl"
+    rows = [
+        {
+            "id": i,
+            "text": f"the cat {GAP} on the mat",
+            "answer": "sat",
+            "candidates": ["sat", "ran", "is"],
+            "kinds": {"ran": "corpus"},
+            "freq": 3,
+        }
+        for i in range(3)
+    ]
+    items.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    base = ["-p", "cpu-debug", "-s", f"model_id={tiny_model_dir}", "-s", f"output_dir={tmp_path / 'run'}"]
+    out = CliRunner().invoke(
+        cli, [*base, "cloze", "score", str(items), "-m", tiny_model_dir, "--pmi", "0.5", "--pmi", "1"]
+    )
+    assert out.exit_code == 0, out.output
+    assert "α=0.5" in out.output and "α=1" in out.output and "α=0" in out.output

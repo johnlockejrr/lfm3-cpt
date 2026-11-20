@@ -182,16 +182,32 @@ def build_items(
     return items
 
 
+def prior_scores(logprob_fn: Callable[[list[str]], list[float]], words: Iterable[str]) -> dict[str, float]:
+    """log p(word) on its own, as the model sees it at the start of a text: how likely it is regardless of context."""
+    uniq = sorted(set(words))
+    return dict(zip(uniq, logprob_fn(uniq), strict=True)) if uniq else {}
+
+
 def score_items(
-    logprob_fn: Callable[[list[str]], list[float]], items: Sequence[dict[str, Any]], gap: str = GAP
+    logprob_fn: Callable[[list[str]], list[float]],
+    items: Sequence[dict[str, Any]],
+    gap: str = GAP,
+    pmi: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """Rank each item's candidates by the log-probability of the filled text. `logprob_fn` scores a batch."""
+    """Rank each item's candidates by the log-probability of the filled text. `logprob_fn` scores a batch.
+
+    With `pmi` = α > 0 the score is log p(text with word) - α·log p(word alone): a frequent word no longer wins only
+    because it is frequent (α = 1 is pointwise mutual information between the word and its context)."""
     texts: list[str] = []
     for it in items:
         if it["text"].count(gap) != 1:
             raise ValueError(f"item {it.get('id')}: the text must contain {gap!r} exactly once")
         texts += [it["text"].replace(gap, c) for c in it["candidates"]]
     scores = logprob_fn(texts)
+    if pmi:
+        prior = prior_scores(logprob_fn, (c for it in items for c in it["candidates"]))
+        flat = [c for it in items for c in it["candidates"]]
+        scores = [sc - pmi * prior[c] for sc, c in zip(scores, flat, strict=True)]
     out, k = [], 0
     for it in items:
         cands = it["candidates"]
