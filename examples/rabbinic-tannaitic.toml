@@ -25,8 +25,8 @@ eval_files = ["corpora/rabbinic/tannaitic.eval.jsonl"]
 # Modern Hebrew?". Score other sets (responsa, English) separately with `evaluate -s ood_files=...`.
 ood_files = ["corpora/he/wiki.eval.jsonl"]
 file_min_chars = 100            # a short mishnah chapter is a real document
-# Vowel points and cantillation are removed so pointed and unpointed editions tokenize the same way; geresh ׳,
-# gershayim ״ and maqaf stay (the export already turned ' and " into ׳ and ״).
+# Vowel points and cantillation are removed so pointed and unpointed editions tokenize the same way; geresh ׳
+# and gershayim ״ stay (the export already turned ' and " into ׳ and ״, and the maqaf into a space).
 strip_marks = ["hebrew_cantillation", "hebrew_points"]
 grammar_files = ["corpora/rabbinic/pairs.jsonl"]
 

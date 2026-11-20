@@ -684,6 +684,12 @@ def multiblimp(lang, output, limit, tsv_path) -> None:
     show_default=True,
     help="Turn \" and ' in abbreviations into gershayim ״ / geresh ׳ and remove quotation marks.",
 )
+@click.option(
+    "--maqaf-to-space/--keep-maqaf",
+    default=True,
+    show_default=True,
+    help="Replace the maqaf (and a hyphen between Hebrew words) with a space.",
+)
 @click.option("--strip-punctuation", is_flag=True, help="Also remove modern punctuation (. , ; ! ? dashes).")
 @click.option("--drop-editorial", is_flag=True, help="Remove bracketed editorial matter: [...] (...) <...>.")
 @click.option("--max-latin", type=float, default=0.02, show_default=True, help="Drop segments with more Latin.")
@@ -707,6 +713,7 @@ def sefaria(
     max_chars,
     max_doc_chars,
     native_marks,
+    maqaf_to_space,
     strip_punctuation,
     drop_editorial,
     max_latin,
@@ -769,7 +776,13 @@ def sefaria(
         if stats:
             st = library_stats(segments, selector)
         else:
-            cleaner = Cleaner(native_marks, strip_punctuation, drop_editorial, max_latin)
+            cleaner = Cleaner(
+                native_marks=native_marks,
+                strip_punctuation=strip_punctuation,
+                drop_editorial=drop_editorial,
+                max_latin=max_latin,
+                maqaf_to_space=maqaf_to_space,
+            )
             result = build_corpus(
                 segments,
                 selector,

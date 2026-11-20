@@ -254,3 +254,19 @@ def test_cleaner_quotations_vs_abbreviations():
     assert c("שנ' (תהלי' ע\"ד י\"ג) שברת ראשי") == "שנ׳ שברת ראשי"
     assert c("ת\"ל (ע' נחמי' ט' י\"ז) ויתנו") == "ת״ל ויתנו"
     assert c("אמר רבי [יוסי] ⟨תוספת⟩ (שמות (ב) ג) כך") == "אמר רבי כך"
+
+
+def test_cleaner_never_glues_words():
+    c = Cleaner(strip_punctuation=True, drop_editorial=True)
+    assert c("<b>והקריבו</b>אל המזבח") == "והקריבו אל המזבח"
+    assert c("הכהן.ומלק") == "הכהן ומלק"
+    assert c("הכהן(ויקרא א טו)ומלק") == "הכהן ומלק"
+    assert c("הכהן[א]ומלק") == "הכהן ומלק"
+    assert c('ו<span class="x">אמר</span> רבי') == "ואמר רבי"  # inline tags inside a word stay joined
+
+
+def test_maqaf_becomes_space():
+    c = Cleaner()
+    assert c("כָּל־אָדָם בֵּית-הַמִּקְדָּשׁ") == "כָּל אָדָם בֵּית הַמִּקְדָּשׁ"
+    assert c.stats["maqaf -> space"] == 2
+    assert Cleaner(maqaf_to_space=False)("כל־אדם") == "כל־אדם"

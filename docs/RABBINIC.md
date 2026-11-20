@@ -88,8 +88,11 @@ What it does:
     does a `'` after a final letter (ך ם ן ף ץ), since a truncation never ends in one. Then `"` inside an
     abbreviation becomes gershayim (`רז"ל` → `רז״ל`) and `'` after a letter becomes geresh (`ר' יהודה` →
     `ר׳ יהודה`, `תהלי'` → `תהלי׳`), including typographic quotes (`’ “ ”`). Any quote mark left is removed;
+  - **maqaf → space** (default; `--keep-maqaf` to keep it): `כל־אדם` → `כל אדם`, also a hyphen standing in
+    for a maqaf between Hebrew words;
   - `--strip-punctuation`: modern editorial punctuation (`. , ; ! ?`, dashes) is removed too. The colon that
-    closes a mishnah stays, as does the maqaf. Without this flag the model learns a modern edition's punctuation;
+    closes a mishnah stays. Without this flag the model learns a modern edition's punctuation;
+  - removed material (tags, brackets, punctuation) leaves a space, so neighbouring words never get glued;
   - `--drop-editorial`: removes everything in brackets (`[...]`, `(...)`, `<...>`, `{...}`, `⟨...⟩`), nested ones
     too, and any stray bracket: editors' additions, variant readings and source references such as
     `(תהלי׳ ע״ד י״ג)`. Medieval manuscripts have no brackets, so for this corpus it is on;

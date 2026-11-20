@@ -183,6 +183,8 @@ _FOOTNOTE_RE = re.compile(
 )
 _BR_RE = re.compile(r"<br\s*/?>", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
+# Tags that separate words (a bold lemma, a paragraph); other inline tags (span, i, sup) may sit inside a word.
+_SPACING_TAG_RE = re.compile(r"</?(?:b|strong|big|small|p|div|td|tr|li|h\d)\b[^>]*>", re.I)
 _SPACES_RE = re.compile(r"[ \t\u00a0\u2000-\u200a\u202f\u3000]+")
 _POINTS_RE = re.compile(r"[\u0591-\u05c7]")  # cantillation + vowel points, for duplicate detection only
 _INVISIBLE_RE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u0000-\u0008\u000b-\u001f]")
@@ -216,6 +218,8 @@ _EDITORIAL_RE = re.compile(
 )
 _BRACKET_CHARS_RE = re.compile(r"[\[\](){}<>\u27e8\u27e9\u2039\u203a\u3008\u3009]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+# Maqaf (and a hyphen standing in for it between Hebrew words) joins words in pointed editions: כל־אדם.
+_MAQAF_RE = re.compile(rf"\u05be|(?<=[{_LETTER}{_MARKS}])[-\u2010\u2011](?=[{_LETTER}])")
 
 
 @dataclass
@@ -227,8 +231,9 @@ class Cleaner:
     * `native_marks` (default): abbreviation and numeral marks become the Hebrew geresh ׳ and gershayim ״
       (ר' -> ר׳, רז"ל -> רז״ל, also typographic quotes); quote marks left after that are quotation, which the
       manuscripts and early prints don't have, and are removed;
+    * `maqaf_to_space` (default): the maqaf (and a hyphen between Hebrew words) becomes a space;
     * `strip_punctuation`: also remove modern editorial punctuation (. , ; ! ? dashes); the colon that closes
-      a mishnah or a verse, and the maqaf, are kept;
+      a mishnah or a verse is kept;
     * `drop_editorial`: remove bracketed editorial matter ([...], (...), <...>): additions, variants, sources;
     * segments in which more than `max_latin` of the letters are Latin are dropped (translations, notes).
     """
@@ -236,6 +241,7 @@ class Cleaner:
     native_marks: bool = True
     strip_punctuation: bool = False
     drop_editorial: bool = False
+    maqaf_to_space: bool = True
     max_latin: float = 0.02
     stats: Counter = field(default_factory=Counter)
 
@@ -244,20 +250,21 @@ class Cleaner:
         text, n = _FOOTNOTE_RE.subn("", text)
         st["footnotes removed"] += n
         text = _BR_RE.sub("\n", text)
+        text = _SPACING_TAG_RE.sub(" ", text)
         text = html.unescape(_TAG_RE.sub("", text))
         text, n = _INVISIBLE_RE.subn("", text)
         st["invisible/control characters removed"] += n
         text = _PRESENTATION_RE.sub(lambda m: unicodedata.normalize("NFKC", m.group()), text)
         text = unicodedata.normalize("NFC", text)
-        text, n = _MARKUP_CODES_RE.subn("", text)
+        text, n = _MARKUP_CODES_RE.subn(" ", text)
         st["markup codes / note markers removed"] += n
         if self.drop_editorial:
             for _ in range(3):  # nested brackets, innermost first
-                text, n = _EDITORIAL_RE.subn("", text)
+                text, n = _EDITORIAL_RE.subn(" ", text)
                 st["bracketed editorial passages removed"] += n
                 if not n:
                     break
-            text, n = _BRACKET_CHARS_RE.subn("", text)
+            text, n = _BRACKET_CHARS_RE.subn(" ", text)
             st["stray brackets removed"] += n
         if self.native_marks:
             text, n = _QUOTED_RE.subn("\\1", text)
@@ -270,8 +277,11 @@ class Cleaner:
             st["' -> geresh ׳"] += n
             text, n = _QUOTE_RE.subn("", text)
             st["quotation marks removed"] += n
+        if self.maqaf_to_space:
+            text, n = _MAQAF_RE.subn(" ", text)
+            st["maqaf -> space"] += n
         if self.strip_punctuation:
-            text, n = _MODERN_PUNCT_RE.subn("", text)
+            text, n = _MODERN_PUNCT_RE.subn(" ", text)  # a space: "הכהן.ומלק" must not become one word
             st["modern punctuation removed"] += n
         text = re.sub(r"\s+([:\u05c3])", r"\1", text)  # no space before a closing colon / sof pasuq
         lines = (_SPACES_RE.sub(" ", line).strip() for line in text.splitlines())
