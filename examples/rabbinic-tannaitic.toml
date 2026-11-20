@@ -8,11 +8,11 @@
 # The Tannaitic corpus is small (about 5M characters, 3-4M tokens), so it is repeated (@3) and the replay slices
 # are sized from it: roughly half its size in Modern Hebrew and a third in English (docs/RABBINIC.md § 3).
 # Start A: the stage-1 Modern Hebrew model (not the chat model). Start B, from the original model, is the same
-# config with -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true -s output_dir=... (docs/RABBINIC.md § 5).
+# config with -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true -s output_dir=... (docs/RABBINIC.md § 4).
 model_id = "runs/lfm3-1.7b-cpt-he/merged"
 target_language = "he"
 data_dir = "data/rabbinic"
-output_dir = "runs/lfm3-1.7b-cpt-rabbinic"
+output_dir = "runs/lfm3-1.7b-cpt-rabbinic-e17"
 
 [data]
 train_files = [
@@ -36,7 +36,9 @@ grammar_files = ["corpora/rabbinic/pairs.jsonl"]
 train_embeddings = false
 
 [training]
-num_train_epochs = 1
+# 1.7 passes over the mix: each Tannaitic text is seen about 5 times (@3 x 1.7) and the replay keeps its share.
+# Held-out perplexity was still improving at the end of 1 pass; 1.7 gave 6.15 -> 5.76 and gap filling 55% -> 60%.
+num_train_epochs = 1.7
 learning_rate = 1e-4
 eval_steps = 100
 save_steps = 200

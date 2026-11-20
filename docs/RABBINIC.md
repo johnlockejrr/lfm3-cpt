@@ -1,358 +1,355 @@
-# Tannaitic (Mishnaic) Hebrew with LFM3
+# Tannaitic (Mishnaic) Hebrew with LFM3: a tested recipe
 
-> **Status: plan, not yet run.** The commands and tooling are tested; the expected numbers are not measured.
-> [HEBREW.md](HEBREW.md) is the tested Modern Hebrew recipe; its stage-1 model
-> (`runs/lfm3-1.7b-cpt-he/merged`) is one of the two starting points compared here.
+> **Status: tested** on an RTX 3090 (November 2026). Every command below was run as shown, and every number is
+> measured. It builds on [HEBREW.md](HEBREW.md): its stage-1 Modern Hebrew model (`runs/lfm3-1.7b-cpt-he/merged`)
+> is the starting point.
 
-Mishnaic Hebrew is its own language stage, not an early form of Modern Hebrew, and a model trained on Modern
-Hebrew brings Modern usage with it: vocabulary, idiom, and meanings that words acquired much later. On the
-other hand it shares the script and much of the lexicon and morphology, and its embeddings have already been
-trained for Hebrew letters, which a corpus of a few million tokens can't do on its own. Which effect wins is an
-empirical question, so step 5 trains **from both starting points on the same data** and compares them on held-out
-tractates: the original LFM3, and the Modern Hebrew model.
+**What came out of it:** a model that reads and writes Tannaitic Hebrew, and two tools to measure and use it for
+filling lacunae.
 
-The corpus is Tannaitic text only (Mishnah, Tosefta, the halakhic midrashim), with a little English replay and,
-for the Modern Hebrew start, a little Modern Hebrew replay. Responsa are measured first and only added if they
-help (step 6).
+| | LFM3 (original) | Modern Hebrew model | **Tannaitic model** |
+|---|---|---|---|
+| perplexity on unseen tractates | 34.9 | 10.2 | **5.76** |
+| minimal pairs (word order, word choice) | 73.3% | 83.5% | **94.8%** |
+| gap filling: right word among 8 plausible (chance 12.6%) | | 42.5% | **59.8%** |
+| … right word in the top 3 | | 72.5% | **89.0%** |
+| … with the frequency correction (`--pmi 0.5`, § 6) | | | **63.2% / 90.2%** |
+| Modern Hebrew perplexity (Wikipedia, unseen) | 21.0 | 5.30 | 5.61 |
+| English perplexity (Wikipedia, unseen) | 15.8 | 13.0 | 13.1¹ |
+
+¹ measured after one pass (§ 5).
+
+Training took 77 minutes on one RTX 3090. The Tannaitic part of Sefaria is small (4.3M characters after cleaning,
+about 3M tokens); the model learned how the Mishnah *speaks* far better than what it *says* (§ 8).
 
 - [0. What you need](#0-what-you-need)
-- [1. Look at the library before exporting](#1-look-at-the-library-before-exporting)
-- [2. Export and clean the Tannaitic corpus](#2-export-and-clean-the-tannaitic-corpus)
-- [3. Replay slices](#3-replay-slices)
-- [4. Before training: how much Mishnaic does each model already know?](#4-before-training-how-much-mishnaic-does-each-model-already-know)
-- [5. Train from both starting points](#5-train-from-both-starting-points)
-- [6. Check, and decide about the responsa](#6-check-and-decide-about-the-responsa)
-- [7. Chat again (stage 2)](#7-chat-again-stage-2)
-- [8. Limits](#8-limits)
+- [1. Choose the texts and editions](#1-choose-the-texts-and-editions)
+- [2. Export and clean](#2-export-and-clean)
+- [3. Tokenizer, replay, prepare](#3-tokenizer-replay-prepare)
+- [4. Which starting model? Measure, then train both](#4-which-starting-model-measure-then-train-both)
+- [5. The final model](#5-the-final-model)
+- [6. Gap filling: the real test](#6-gap-filling-the-real-test)
+- [7. Restoring a lacuna](#7-restoring-a-lacuna)
+- [8. What it can and cannot do](#8-what-it-can-and-cannot-do)
+- [9. Lessons learned](#9-lessons-learned)
+- [10. Not done yet](#10-not-done-yet)
 
 ---
 
 ## 0. What you need
 
-- The merged stage-1 model from HEBREW.md: `runs/lfm3-1.7b-cpt-he/merged`.
-- `corpora/he/wiki.eval.jsonl` (Modern Hebrew, held out) and `corpora/en-check/wiki.eval.jsonl` (English) from
-  HEBREW.md § 1, to see what the new stage costs.
+- The merged Modern Hebrew model from HEBREW.md: `runs/lfm3-1.7b-cpt-he/merged`, and its held-out sets
+  `corpora/he/wiki.eval.jsonl` (Modern Hebrew) and `corpora/en-check/wiki.eval.jsonl` (English).
 - Sefaria's library export, [Sefaria/hebrew_library](https://huggingface.co/datasets/Sefaria/hebrew_library):
-  one 7.7 GB JSONL file, one segment (usually a mishnah or a paragraph) per line, every edition of every text.
+  one 7.7 GB JSONL file with one segment (a mishnah, a paragraph) per line, in every edition Sefaria has.
   `lfm3-cpt sefaria` downloads it once into the Hugging Face cache (or give a copy with `--file`).
+- `corpora/` must be in `.gitignore` (it is in the project's own): exported corpora must never be committed.
 
 **Licences.** The dataset card says GPL-3.0, but every *edition* has its own licence on Sefaria (public domain,
-CC-BY, CC-BY-NC, ...). That doesn't matter for a private experiment. Before publishing a model, check the
-editions listed in the `.books.tsv` manifest.
+CC-BY, CC-BY-NC, …). For a private experiment that doesn't matter; before publishing a model, check the editions
+listed in `corpora/rabbinic/tannaitic.books.tsv`.
 
-## 1. Look at the library before exporting
+## 1. Choose the texts and editions
 
 ```bash
 lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' --stats
 ```
 
-The first table lists Sefaria's categories by size. The second lists every work the selection catches and the
-edition the export would use for it. The `tannaitic` preset selects titles starting with *Mishnah*, *Pirkei
-Avot*, *Tosefta*, *Mekhilta*, *Sifra*, *Sifrei*, *Midrash Tannaim*. It leaves out commentaries (`… on …`),
-*Mishnah Berurah* (20th-century halakhah, despite its name), introductions and Lieberman's *Tosefta Kifshutah*.
-Sefaria stores Sifra as one "book" per chapter; these are shown (and held out) by parashah.
+The `tannaitic` preset selects the Mishnah (with Pirkei Avot), the Tosefta, Mekhilta (both), Sifra and Sifrei
+(Bamidbar, Devarim, Zuta). It leaves out commentaries (`… on …`), *Mishnah Berurah* (20th-century halakhah, despite
+its name), introductions and *Tosefta Kifshutah*. The table shows one row per work and the edition it will use.
 
-The Tannaitic part of Sefaria is about **5–6M characters** (without vowel points), roughly 3–4M tokens.
+What we chose, and why:
 
-Things to decide:
+- **Mishnah: the Kaufmann manuscript** (Dan Be'eri's edition) for all 63 tractates: Mishnaic Hebrew as it was
+  written, with its plene spellings, rather than a printed text. Sizes are compared *without vowel points*:
+  otherwise a vocalized edition always looks largest, and an earlier version of the tool mixed Kaufmann with
+  printed editions tractate by tractate.
+- **Tosefta: Lieberman's edition of the Vienna codex** where it exists (Zeraim to Nezikin), Machon Mamre for the
+  rest. Sefaria has most tractates twice (*Tosefta Berakhot* and *Tosefta Berakhot (Lieberman)*); only one of
+  each pair is kept (33 books left out). `--keep-all-editions` would keep both, near-duplicates included.
+- **Sifra** (Venice 1545) is stored by Sefaria as one "book" per chapter; the tool groups it by parashah.
 
-- **Which Mishnah.** Sefaria has up to six editions per tractate: Dan Be'eri's edition of the **Kaufmann
-  manuscript** (vocalized, the Palestinian tradition and its plene spellings), *Torat Emet*, and the Vilna print.
-  Without a preference the export takes the largest edition, counted without vowel points so that pointed and
-  plain editions compare fairly. For Mishnaic Hebrew as it was written, Kaufmann is the natural choice:
-  `--prefer-version Kaufmann`. Check in the table that every tractate then shows Kaufmann, and that its size
-  matches the other tractates' (a much smaller Kaufmann text would mean an incomplete edition on Sefaria).
-- **Which Tosefta.** Sefaria has most tractates twice: Lieberman's edition of the Vienna codex (*Tosefta
-  Berakhot (Lieberman)*, Zeraim to Nezikin) and the Machon Mamre/Vilna text (*Tosefta Berakhot*). Only one
-  of each pair is kept (the table says how many were left out); `--prefer-version 'codex Vienna'` makes it
-  Lieberman's wherever it exists. `--keep-all-editions` keeps both.
-- **Anything unexpected.** Add `--exclude REGEX` (titles and categories) or `--title REGEX` to fix the selection.
-  Rerun `--stats` until the list is right.
+Result: 145 works, about 5.0M characters before cleaning.
 
-## 2. Export and clean the Tannaitic corpus
+## 2. Export and clean
 
 ```bash
 lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' \
     --strip-punctuation --drop-editorial -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
 ```
 
-What it does:
+Our export: **2,240 chapters, 4.28M characters** for training; **103 chapters, 0.25M** held out (Mishnah and Tosefta
+Bekhorot, Eduyot, Ketubot, Parah, Zevachim); 1,000 minimal pairs from the held-out text. The cleaning counts:
 
-- **One edition per work,** as shown by `--stats`. Every choice is listed in `tannaitic.books.tsv`, including the
-  books left out as other editions (`dropped`).
-- **Cleaning,** with every change counted in the output table:
-  - HTML tags, Sefaria footnotes, entities, invisible bidi/control characters, Hebrew presentation forms, legacy
-    markup codes (`@11`) and note markers (`*`, `[3]`, `(4)`);
-  - **native marks:** quoted passages lose their quotation marks first (an opening quote at the start of a word,
-    a closing one at the end of a word; one-letter abbreviations like `ה'` inside the verse are allowed), and so
-    does a `'` after a final letter (ך ם ן ף ץ), since a truncation never ends in one. Then `"` inside an
-    abbreviation becomes gershayim (`רז"ל` → `רז״ל`) and `'` after a letter becomes geresh (`ר' יהודה` →
-    `ר׳ יהודה`, `תהלי'` → `תהלי׳`), including typographic quotes (`’ “ ”`). Any quote mark left is removed;
-  - **maqaf → space** (default; `--keep-maqaf` to keep it): `כל־אדם` → `כל אדם`, also a hyphen standing in
-    for a maqaf between Hebrew words;
-  - `--strip-punctuation`: modern editorial punctuation (`. , ; ! ?`, dashes) is removed too. The colon that
-    closes a mishnah stays. Without this flag the model learns a modern edition's punctuation;
-  - removed material (tags, brackets, punctuation) leaves a space, so neighbouring words never get glued;
-  - **numbering** left in the text is removed: lone letters (Hebrew has no one-letter word without a geresh, so
-    `ח החשוד…` is mishnah 8) and 11-29 at the start of a line;
-  - `--drop-editorial`: removes everything in brackets (`[...]`, `(...)`, `<...>`, `{...}`, `⟨...⟩`), nested ones
-    too, and any stray bracket: editors' additions, variant readings and source references such as
-    `(תהלי׳ ע״ד י״ג)`. Medieval manuscripts have no brackets, so for this corpus it is on;
-  - segments with more than 2% Latin letters are dropped (stray translations or notes).
-- **Documents** are chapters, with segments in reading order. Vowel points and cantillation are kept in the files
-  and removed at training time (`strip_marks` in the config), so you can still change your mind.
-- **Held out: whole tractates (5%),** and the same tractate in every collection. *Mishnah Berakhot* and *Tosefta
-  Berakhot* go to the same side, because the Tosefta often repeats the Mishnah word for word. To choose them
-  yourself: `--eval-match 'Berakhot' --eval-match 'Bava Kamma'`.
-- **Minimal pairs** from the held-out tractates only: the original sentence against the same sentence with two
-  neighbouring words swapped (`word_order`), or one word replaced by another word of similar frequency
-  (`word_substitution`). These pairs are coarse and test the register, not a rule of grammar. Their value is
-  that they come from text the model never trains on.
+| cleaning step | count |
+|---|---|
+| bracketed editorial passages removed (`(תהלי׳ ע״ד י״ג)`, `[…]`, `⟨…⟩`, nested ones too) | 16,317 |
+| quoted passages unquoted (the verse stays, its quotation marks go) | 10,713 |
+| `'` → geresh ׳ (`ר' יהודה` → `ר׳ יהודה`, `תהלי'` → `תהלי׳`) | 19,572 |
+| `"` → gershayim ״ (`רז"ל` → `רז״ל`) | 9,076 |
+| modern punctuation removed (`. , ; ! ?`, dashes; the colon closing a mishnah stays) | 146,578 |
+| maqaf → space (`כל־אדם` → `כל אדם`) | 254 |
+| numbering letters removed (`ח החשוד…`: mishnah 8) | several thousand |
+| closing quotes after a final letter, stray brackets, control characters, markup codes, Latin segments | ~400 |
 
-**Audit the cleaning before training on it:**
+Rules worth knowing:
+
+- **Native marks.** Medieval texts have no quotation marks, but abbreviations and truncations carry a geresh or
+  gershayim. A quotation is an opening quote at the start of a word and a closing one at the end of a word: both
+  go. A `'` after a final letter (ך ם ן ף ץ) also closes a quotation, since a truncation never ends in one. What
+  remains after a letter is an abbreviation mark.
+- **Nothing is glued.** Removed tags, brackets and punctuation leave a space (`<b>והקריבו</b>אל` → `והקריבו אל`).
+- **Numbering.** Hebrew has no one-letter word without a geresh, so a lone letter left in the text is a number.
+- **Duplicates.** A segment whose text (without vowels and punctuation) was already seen is dropped.
+- **Held out by tractate, together with its parallels.** *Mishnah Berakhot* and *Tosefta Berakhot* always go to
+  the same side, because the Tosefta often repeats the Mishnah word for word.
+- Vowel points stay in the files and are removed at training time (`strip_marks` in the config).
+
+**Audit before training.** This is where most of our time went, and where it paid off:
 
 ```bash
 python3 - <<'E'
 import json, random, re
+from collections import Counter
 docs = [json.loads(l)["text"] for l in open("corpora/rabbinic/tannaitic.train.jsonl")]
 text = "\n".join(docs)
-print(f"{len(docs):,} chapters, {len(text)/1e6:.1f}M characters")
+print(f"{len(docs):,} chapters, {len(text)/1e6:.2f}M characters")
 for name, pat in [("ASCII quotes", r"[\"']"), ("Latin letters", r"[A-Za-z]"), ("digits", r"\d"),
-                  ("[brackets]", r"\[[^\]]*\]"), ("(parentheses)", r"\([^)]*\)"), ("geresh ׳", "׳"),
-                  ("gershayim ״", "״")]:
-    hits = re.findall(pat, text)
-    examples = " | ".join(sorted(set(h for h in hits if len(h) > 1))[:6])
-    print(f"{name:15} {len(hits):9,}  {examples}")
+                  ("brackets", r"[\[\](){}<>]"), ("maqaf", "־"), ("lone letters", r"(?<!\S)[א-ת](?=\s)")]:
+    print(f"{name:13} {len(re.findall(pat, text)):9,}")
+bare = Counter(re.sub(r"[֑-ׇ]", "", w) for w in re.findall(r"[א-ת֑-ׇ]+׳", text))
+print("geresh, most common:", " ".join(f"{w}({c})" for w, c in bare.most_common(15)))
+print("geresh, 4+ letters:", " ".join(w for w, _ in bare.most_common() if len(w) >= 5)[:600])
 random.seed(1)
-for d in random.sample(docs, 3):
-    print("\n---\n" + d[:500])
+for d in random.sample(docs, 2):
+    print("\n---\n" + d[:400])
 E
 ```
 
-The bracket and quote counts should be zero. Then look at the gereshes: truncations (`ר׳`, `אומ׳`, `תהלי׳`) are
-right, full words with a geresh are leftover closing quotes:
+All counts should be (near) zero. The long geresh words are mostly real truncations (`עזרי׳`, `ישעי׳`, `שנאמ׳`,
+`והכת׳`); what is left are verse endings whose opening quote was missing in the edition (`תיראו׳`, `יבחר׳`). We
+had about 350 of these in 4.3M characters and stopped there.
 
-```bash
-python3 - <<'E'
-import json, re
-from collections import Counter
-text = "\n".join(json.loads(l)["text"] for l in open("corpora/rabbinic/tannaitic.train.jsonl"))
-bare = Counter(re.sub(r"[\u0591-\u05c7]", "", w) for w in re.findall(r"[\u05d0-\u05ea\u0591-\u05c7]+\u05f3", text))
-print("most common:", " ".join(f"{w}({c})" for w, c in bare.most_common(25)))
-print("4+ letters:", " ".join(w for w, _ in bare.most_common() if len(w) >= 5)[:1500])
-E
-```
-
-Then check that the tokenizer handles this register as well as Modern Hebrew (stage 1 measured 1.54 characters
-per token):
+## 3. Tokenizer, replay, prepare
 
 ```bash
 lfm3-cpt -c examples/rabbinic-tannaitic.toml tokenizer-check corpora/rabbinic/tannaitic.train.jsonl
 ```
 
-## 3. Replay slices
+1.46 characters per token, the same as Modern Hebrew (1.54), on which stage 1 trained well; "poor" is relative to
+English. One finding: the tokenizer has **no token for the geresh ׳ or gershayim ״** (`וגו׳ → ['וג', 'ו', '�',
+'�']`): each is spelled as its two UTF-8 bytes. That costs about 1% more tokens and the model learns the byte pair
+like any other sequence, so we kept the native marks. (`--keep-quotes` would export ASCII `'` and `"` instead.)
 
-The Tannaitic corpus is small: the export table prints its training size (call it *T* characters, about 5M).
-Small corpora are repeated (`@3` in the config), and the replay is sized from *T*: about half of *T* in Modern
-Hebrew and a third in English. With T ≈ 5M characters:
+Replay keeps Modern Hebrew and English from being pushed out: about half of the Tannaitic size (T = 4.28M) in
+Modern Hebrew, a third in English:
 
 ```bash
 lfm3-cpt export wikimedia/wikipedia --subset 20231101.he --title-field title \
-    -o corpora/rabbinic/replay-he --max-chars 2.5M --eval-docs 0 --seed 7
+    -o corpora/rabbinic/replay-he --max-chars 2.1M --eval-docs 0 --seed 7
 lfm3-cpt export HuggingFaceFW/fineweb-edu --subset sample-10BT \
-    -o corpora/rabbinic/replay-en --max-chars 1.7M --eval-docs 0 --seed 7
-```
-
-Then `examples/rabbinic-tannaitic.toml` reads exactly these files. Prepare the data:
-
-```bash
+    -o corpora/rabbinic/replay-en --max-chars 1.4M --eval-docs 0 --seed 7
 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml prepare
 ```
 
-## 4. Before training: how much Mishnaic does each model already know?
+`examples/rabbinic-tannaitic.toml` reads exactly these files, with the Tannaitic text three times (`@3`):
+16.3M characters, **8.5M tokens** per pass.
 
-Score both starting points on the held-out tractates and the pairs (a few minutes each):
+## 4. Which starting model? Measure, then train both
+
+Mishnaic Hebrew is not an early form of Modern Hebrew, and a model trained on Modern Hebrew brings modern usage
+with it. On the other hand it already reads the script, much of the lexicon and the morphology. So we measured
+both starting points before training, then trained both on the same data:
 
 ```bash
 for m in LiquidAI/LFM3-1.7B runs/lfm3-1.7b-cpt-he/merged; do
   CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml evaluate $m
 done
-```
 
-This is already informative: it shows how much (or how little) Modern Hebrew training helps with reading the
-Mishnah before any Mishnaic training.
-
-## 5. Train from both starting points
-
-Same data, same settings, only the starting model differs (about 1 hour each for T ≈ 5M: 3 × 5M + 4M replay
-characters ≈ 13M tokens at ~3,300 tokens/s):
-
-```bash
-# A: from the Modern Hebrew model (the config's default)
-CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml train --merge
-
-# B: from the original LFM3; its Hebrew embeddings are untrained, so they are trained here
+# A: from the Modern Hebrew model, embeddings frozen (they were trained in stage 1)
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml \
-    -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true \
+    -s num_train_epochs=1 -s output_dir=runs/lfm3-1.7b-cpt-rabbinic train --merge
+# B: from the original LFM3, which has to train its Hebrew embeddings
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml \
+    -s num_train_epochs=1 -s model_id=LiquidAI/LFM3-1.7B -s train_embeddings=true \
     -s output_dir=runs/lfm3-1.7b-cpt-rabbinic-base train --merge
 ```
 
-The settings, and why:
+| one pass (46 min each)¹ | before → after: A, from Modern Hebrew | before → after: B, from LFM3 |
+|---|---|---|
+| perplexity on unseen tractates | 10.2 → **6.13** | 34.9 → 6.56 |
+| minimal pairs | 84.5% → **94.0%** | 73.3% → 92.1% |
+| Modern Hebrew perplexity | 5.30 → 5.54 | 21.0 → 8.36 |
 
-- Both continue from a base model, not a chat model. CPT erodes chat skills anyway, and stage 2 takes 15 minutes
-  to redo (step 7).
-- A keeps the embeddings frozen: they were trained in stage 1 for the same script, and a few million tokens would
-  mostly overfit 262M embedding parameters. B has to train them; with this little text that is B's handicap.
-- `learning_rate = 1e-4`, one pass over a mix in which the Tannaitic text appears three times.
-- The Modern Hebrew replay is in both runs, so that the start is the only difference. For a stricter B (no Modern
-  Hebrew at all), remove `replay-he` from `train_files` in a copy of the config.
+¹ on the data before the last cleaning fix (mishnah numbers); both runs on the same data.
 
-**How to compare them** (`lfm3-cpt report runs/lfm3-1.7b-cpt-rabbinic runs/lfm3-1.7b-cpt-rabbinic-base`):
+**A wins on every measure**, and the texts agree. A's continuations stayed Mishnaic in form; one of B's two drifted
+into Modern Hebrew web prose (`הערך האמיתי … היה 1/3, ולא 1/2 כפי שצוין`), the Hebrew the original model saw in
+pretraining. Before any Mishnaic training, the Modern Hebrew stage had already cut the Mishnah's perplexity from 37
+to 10: it works as a better reader of the script and the language, and the Tannaitic stage then sets the register.
 
-- held-out tractates' perplexity and pair accuracy: the main result;
-- the same `generate` and `rank` checks as in step 6, looking for Modern Hebrew words and idioms in A's
-  continuations. That is the concern a perplexity number can't show.
+## 5. The final model
 
-## 6. Check, and decide about the responsa
+The held-out perplexity of A was still at its best on the last step, so it hadn't finished learning. 1.7 passes
+over the same mix (each Tannaitic text seen about 5 times; the replay keeps its share) is now the config's default:
 
-Run these checks on both models (A: `runs/lfm3-1.7b-cpt-rabbinic/merged`, B:
-`runs/lfm3-1.7b-cpt-rabbinic-base/merged`); the commands show A. The results table answers three questions:
+```bash
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/rabbinic-tannaitic.toml train --merge
+```
 
-| row | good sign |
-|---|---|
-| held-out perplexity (unseen tractates) | clearly down from the starting model |
-| minimal-pair accuracy (`word_order`, `word_substitution`) | up |
-| out-of-distribution perplexity (Modern Hebrew Wikipedia) | for A: about the same (a rise of 10% or more means the replay is too small); for B it only shows how much Modern Hebrew it picked up |
+| from the Modern Hebrew model (10.15, 83.5% before) | 1 pass (46 min) | **1.7 passes** (77 min, 14.4M tokens) |
+|---|---|---|
+| perplexity on unseen tractates | 6.15 | **5.76** |
+| minimal pairs | 94.4% | **94.8%** |
+| gap filling, top-1 / top-3 (§ 6, raw score) | 55.0% / 85.2% | **59.8% / 89.0%** |
+| Modern Hebrew perplexity | 5.54 | 5.61 |
 
-English, as in HEBREW.md:
+English stayed where it was: 13.12 after one pass, against 12.98 for the Modern Hebrew model. To check it on
+the final model:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml \
     -s ood_files=corpora/en-check/wiki.eval.jsonl -s data_dir=data/rabbinic-encheck \
-    evaluate runs/lfm3-1.7b-cpt-rabbinic/merged --no-grammar
+    evaluate runs/lfm3-1.7b-cpt-rabbinic-e17/merged --no-grammar
 ```
 
-Look at the text, starting with the opening of a held-out tractate (see `tannaitic.books.tsv` for which ones):
+Reading its text (greedy decoding loops on any base model: sample, with a repetition penalty):
 
 ```bash
-lfm3-cpt generate runs/lfm3-1.7b-cpt-rabbinic/merged --temperature 0 \
-    --prompt "מאימתי קורין את שמע בערבית" --prompt "האומר לחבירו"
+lfm3-cpt generate runs/lfm3-1.7b-cpt-rabbinic-e17/merged --temperature 0.7 --repetition-penalty 1.15 \
+    --max-new-tokens 150 --prompt "כל הבכורות" --prompt "האומר לחבירו" --prompt "האשה נקנית"
 ```
 
-And gap filling, the way you score lacunae:
+The form is right: `רבי אליעזר אומ׳`, `אמר ר׳ שמעון: מודים`, `והלא דברים קל וחומר מה אם… אינו דין ש…`,
+`הרי הוא אומר`, Kaufmann's spellings (`חיב`), no Modern Hebrew. The content is halakhic word salad: firstborns,
+betrothal and slaughter in one breath.
+
+## 6. Gap filling: the real test
+
+The minimal pairs are easy (their wrong option is a random word) and stop telling models apart at ~95%. A lacuna
+means choosing among *plausible* words. `cloze` builds such items once and scores any number of models on the same
+file. We used model B as the *proposer* of hard wrong options: it knows Mishnaic Hebrew but is not one of the
+models compared (a model is at a disadvantage on options chosen against itself).
 
 ```bash
-lfm3-cpt rank runs/lfm3-1.7b-cpt-rabbinic/merged \
-    --text "משעה שהכהנים נכנסים לאכול בתרומתן עד סוף האשמורה ___ דברי רבי אליעזר" \
-    --candidate הראשונה --candidate השנייה --candidate האחרונה
-```
-
-**Gap filling (cloze).** The minimal pairs are easy: their wrong option is a random word, which usually breaks
-the sentence. Restoring a lacuna means choosing among *plausible* words, which is harder (in a first test the
-model preferred `שאינן מבושלין` to the correct `שאינן עבודין`). `cloze` builds such items once from the held-out
-tractates and scores any number of models on the same file:
-
-```bash
-# once: 400 items; wrong options of the same form class and frequency, plus 3 the Modern Hebrew model predicts
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml cloze build \
-    --vocab-file corpora/rabbinic/tannaitic.train.jsonl --proposer runs/lfm3-1.7b-cpt-he/merged \
-    -o corpora/rabbinic/cloze.jsonl
-
-# any time: compare models on the same items
+    --vocab-file corpora/rabbinic/tannaitic.train.jsonl \
+    --proposer runs/lfm3-1.7b-cpt-rabbinic-base/merged -o corpora/rabbinic/cloze.jsonl
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml cloze score corpora/rabbinic/cloze.jsonl \
-    -m runs/lfm3-1.7b-cpt-he/merged -m runs/lfm3-1.7b-cpt-rabbinic/merged --output runs/cloze-scores.jsonl
+    -m runs/lfm3-1.7b-cpt-he/merged -m runs/lfm3-1.7b-cpt-rabbinic-e17/merged --pmi 0.5
 ```
 
-- The masked word is never one of the 150 most frequent words, and has at least four words before it.
-- Corpus options share the answer's first letter (often a prefix: ו ה ב ל מ ש כ) and ending (ין, ות, …), with a
-  similar length and frequency; proposed options are what the proposer model itself expects in the slot.
-- The table gives top-1 and top-3 accuracy against chance, top-1 ignoring a ו/ה prefix (variants manuscripts often
-  disagree on), the mean rank of the right word, top-1 by how frequent
-  the word is in training (rare words are where lacunae hurt), and how often the right word beats each kind of
-  wrong option. The proposer is at a disadvantage on its own proposals, so compare the proposed-options row
-  between the *other* models, or build a second file with a different proposer.
-- Real variant readings can be scored the same way: write items by hand (`{"text": "… ___ …", "answer": …,
-  "candidates": [...]}`, one per line) and run `cloze score` on them.
+400 items from the held-out tractates, 8 candidates each: the right word, 4 of the same form class (first letter,
+ending, length, frequency: `מבושלין`, `טהורין` against `עבודין`) and 3 the proposer predicts in that slot.
 
-**Restoring a real lacuna.** `cloze` measures; `restore` is the tool. You give the text with the gap and what you
-know about it, and it proposes fillers from the model's own continuations (also several words), from every corpus
-word that fits, and from your own list, keeps those that fit, and ranks them with the whole text, including the
-words after the gap:
+**Raw probability prefers common words** (`על`, `אבל`, `אדם` over `בבית`, `תמימים`, `כנסת`). `--pmi α` subtracts α
+times the word's probability on its own; one scoring pass gives a column per α:
+
+| Tannaitic model | α = 0 | 0.25 | **0.5** | 0.75 | 1 |
+|---|---|---|---|---|---|
+| top-1 | 60.5% | 63.5% | **63.2%** | 62.0% | 58.8% |
+| top-3 | 89.0% | 89.8% | **90.2%** | 89.2% | 87.0% |
+| words never seen in training (25) | 32% | 36% | **48%** | 48% | 48% |
+| rare words, 1-3 times (38) | 50.0% | 55.3% | **55.3%** | 52.6% | 50.0% |
+| beats the proposed options | 79.1% | 81.5% | **82.8%** | 83.3% | 83.5% |
+
+**α = 0.5** is the setting to use. The Mishnaic training itself (Modern Hebrew model → Tannaitic model, raw score)
+raised top-1 from 42.5% to 59.8% and rare words from 29% to 50%: it improved word choice, not only fluency.
+
+What the remaining misses are:
+- **The manuscript's own readings:** `ומלח קודמת לעצים` (Kaufmann) where the model chose `קודם`, `אין מקדשין` /
+  `מקדש`: the reading of the printed tradition, also in the training data. Arguably not errors. Prefix variants
+  (`הילך` / `והילך`) are rare: ignoring a ו/ה prefix adds only 0.4%.
+- **Agreement and structure:** `אינן` (two firstborns) → `אינו`; `עשאה למעלן` after `למטן` → `למטן`.
+- **Knowledge:** `אתו ואת בנו`, `כלי לבן` in Parah, `העיד` (the hallmark of Eduyot), `נפרעין` for collecting
+  a ketubah.
+
+Real variant readings can be scored the same way: write items by hand, one per line,
+`{"text": "… ___ …", "answer": "…", "candidates": ["…", "…"]}`, and run `cloze score` on them.
+
+## 7. Restoring a lacuna
+
+`restore` is the tool. It collects fillers from the model's own continuations (also several words), from every
+word of the corpus that fits, and from your conjectures; keeps those that fit what is visible; and ranks them with
+the whole text, including the words after the gap:
 
 ```bash
-# a gap of about six letters
-lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
-    --text "אין ___ מהן לענין כתובה אבל לפרנסה גובין מהן" --letters 5-7
+# only the size of the gap is known (5-7 letters); the right word is נפרעין
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic-e17/merged \
+    --text "בין ששעבד האב בחייו בין ששעבדו יורשין לאחר מיתת אביהן אין ___ מהן לענין כתובה אבל לפרנסה גובין מהן" \
+    --letters 5-7 --pmi 0.5 --candidate נפרעין
 
-# legible traces: first letter נ, two illegible letters, then עין
-lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
+# a few letters are legible: נ, two illegible, then עין
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic-e17/merged \
     --text "אין ___ מהן לענין כתובה אבל לפרנסה גובין מהן" --pattern "נ??עין"
-
-# a two-word gap of 8-10 letters, only the model's proposals
-lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
-    --text "... ___ ..." --words 2 --letters 8-10 --no-vocab
 ```
 
-- `--letters` counts letters only (no spaces, vowel points, geresh); `--pattern` uses `?` for one letter, `*` for
-  any run and a space between words; `--regex` for anything else. Add `--candidate` for your own conjectures.
-- The `source` column says where each filler came from, and how often the model proposed it in its samples
-  (`model ×12`). A filler found only in the corpus is one the model would not have thought of, but still prefers.
-- The score is the probability of the whole text, which favours shorter fillers: compare candidates of similar
-  length (the letter constraint does that for you).
-- Raw probability also favours *common* words (`על`, `אבל`, `אדם`) over the rare word the passage needs. `--pmi α`
-  subtracts α times the filler's probability on its own; `cloze score … --pmi 0.5 --pmi 1` shows which α helps
-  on the benchmark (one column per α, all from one scoring pass). On the Tannaitic items α = 0.5 was best: top-1
-  60.5% → 63.2%, words unseen in training 32% → 48%; at α = 1 it overshoots.
-- In `restore` the correction only reorders the 300 best fillers by raw probability (`--rerank`): over tens of
-  thousands of corpus words it would otherwise lift words that are merely rare. The `raw #` column shows how far
-  each filler moved.
-- Test the tool where you know the answer: add it with `--candidate`, and its rank is shown even outside the top
-  list. An open search is much harder than the benchmark's 8 options: expect the right word in the top 10-20, not
-  first, when only the number of letters is known; legible letters narrow it down dramatically.
-- Give as much surrounding text as you have: the words after the gap count as much as those before it.
-- On the gap-filling benchmark this model picks the right word among 8 plausible ones 55% of the time, and has
-  it in its top 3 85% of the time: read the top of the list as suggestions to check, not as an answer.
+| what is known | candidates that fit | rank of `נפרעין` |
+|---|---|---|
+| 5-7 letters, raw score | 43,068 | 54 |
+| 5-7 letters, `--pmi 0.5` | 43,068 | **28** (top 0.07%) |
+| pattern `נ??עין`, one clause of context | 11 | **2** (0.04 behind `נמנעין`) |
 
-**Responsa.** First as a measurement only: export 2% of the responsa as held-out text, without a training file,
-and score both models on it:
+Above it, with only the letter count: `נלקחין`, `לקוחין`, `גובין`, words for *taking* and *collecting*. The model
+has the meaning; what decides between near-synonyms is idiom, and that is what legible letters supply.
 
-```bash
-lfm3-cpt sefaria --preset responsa --stats      # check the selection first
-lfm3-cpt sefaria --preset responsa --strip-punctuation --drop-editorial --eval-fraction 0.02 --max-chars 0 \
-    -o corpora/rabbinic/responsa
-for m in runs/lfm3-1.7b-cpt-he/merged runs/lfm3-1.7b-cpt-rabbinic/merged runs/lfm3-1.7b-cpt-rabbinic-base/merged; do
-  CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml \
-      -s ood_files=corpora/rabbinic/responsa.eval.jsonl -s data_dir=data/rabbinic-resp evaluate $m --no-grammar
-done
-```
+- `--letters 6` or `5-7` counts letters only (no spaces, vowel points, geresh); `--pattern` uses `?` for one
+  letter, `*` for any run, a space between words; `--words 2` for longer gaps; `--regex` for anything else.
+- `--pmi` only reorders the 300 most plausible fillers (`--rerank`): over a whole corpus it would otherwise lift
+  words that are merely rare. The `raw #` column shows how far each one moved.
+- Your `--candidate` words are always shown with their rank, also below the top list: that is how to test the
+  tool on lacunae whose answer you know.
+- Give all the context you have: the words after the gap count as much as those before.
 
-The responsa are much larger than the Tannaitic corpus. They span the Geonim to the 20th century, they are full
-of Aramaic, and their Hebrew is medieval and later. If the Tannaitic stage already lowered their perplexity, it
-transfers and nothing more is needed. If you do want them in training, add a budgeted, whole-book sample and
-keep the Mishnah repeated so it isn't drowned out:
+## 8. What it can and cannot do
 
-```bash
-lfm3-cpt sefaria --preset responsa --strip-punctuation --drop-editorial --eval-fraction 0.02 --max-chars 20M \
-    -o corpora/rabbinic/responsa
-# then add "corpora/rabbinic/responsa.train.jsonl" to train_files, and raise both replay slices to match
-```
+- **Can:** read and continue Tannaitic text in the right form, prefer the right word among plausible ones
+  (63% / 90% top-3 among 8), shortlist fillers for a gap, and narrow them down sharply with legible letters.
+- **Cannot:** follow a halakhic argument. Its continuations mix topics freely, and it will **invent sources**
+  (tractate, chapter, the name of a Tanna) with full confidence. Treat its suggestions as candidates to check
+  against parallels, never as readings.
+- **Words it never saw** (48% top-1 at best) are its weakest point; more passes over the same text can't fix that,
+  only more text can.
+- The minimal pairs are coarse (a swapped word is *usually* wrong; Mishnaic word order is free in places). Compare
+  models with them; don't read the number as a grammar score.
 
-## 7. Chat again (stage 2)
+## 9. Lessons learned
 
-Rerun the final SFT from HEBREW.md § 4 with `-s model_id=` set to the better of the two merged models. It uses the same
-data and takes about 15 minutes. Sefaria also publishes
-[Rabbinic-Hebrew-English-Pairs](https://huggingface.co/datasets/Sefaria/Rabbinic-Hebrew-English-Pairs):
-real Rabbinic Hebrew → English translations, which suit stage 2 better than distilled pairs. That is the next
-step once stage 1 works; check each source's licence (many translations are CC-BY-NC).
+1. **Look at the data before training on it.** Every cleaning rule above came from reading samples: editions mixed
+   tractate by tractate (vowel points inflating sizes), the Tosefta twice, quotation marks turned into gereshes,
+   editors' source references, words glued where markup was removed, maqafs, mishnah numbers. Each was cheap to
+   fix before training and invisible in the metrics after it.
+2. **The Modern Hebrew stage helps, despite the distance between the languages.** It cut the Mishnah's perplexity
+   from 37 to 10 before any Mishnaic training, beat the from-scratch start on every measure, and its continuations
+   showed *less* Modern Hebrew than the from-scratch model's.
+3. **Measure the task, not a proxy.** Perplexity and minimal pairs looked excellent after one pass; the gap-filling
+   benchmark showed what was still missing (55% top-1), that more passes helped (60%), and that the scoring rule
+   mattered (63% with PMI, unseen words 32% → 48%).
+4. **Small corpora want repetition, carefully.** The Tannaitic text seen ~5 times was still improving on unseen
+   tractates; keep the replay's share when adding passes (raise the epochs, not the `@N`).
+5. **Open search is much harder than multiple choice.** 8 candidates: right word first 63% of the time. 43,000
+   corpus words: in the top 30. Legible letters: top 2.
 
-## 8. Limits
+## 10. Not done yet
 
-- A 1.7B model learns the register well: continuing a mishnah, filling a gap, a sense of what "sounds
-  Tannaitic". It will not follow a sugya reliably.
-- **It will invent sources** (tractate, chapter, the name of a Tanna) with full confidence. For Rabbinic
-  literature a wrong citation is worse than none: treat its output as a reading aid, not an authority.
-- The minimal pairs are coarse. A swapped or replaced word is usually wrong, but some swaps are acceptable
-  (Mishnaic word order is free in places). Compare models on them; don't read the absolute number as a grammar
-  score.
-- Cleaning is rule-based. A closing quote whose opening quote is missing, after a word not ending in a final
-  letter, still becomes a geresh; the geresh check in step 2 shows how many are left.
+- **Real lacunae.** A handful of gaps from manuscripts, with the answer known from a parallel witness, is the test
+  that matters now.
+- **Responsa:** measure first whether the Tannaitic stage transfers to later rabbinic Hebrew, before training on
+  them. They are 111M characters, span the Geonim to the 20th century and are full of Aramaic:
+
+  ```bash
+  lfm3-cpt sefaria --preset responsa --stats
+  lfm3-cpt sefaria --preset responsa --strip-punctuation --drop-editorial --eval-fraction 0.02 --max-chars 0 \
+      -o corpora/rabbinic/responsa
+  for m in runs/lfm3-1.7b-cpt-he/merged runs/lfm3-1.7b-cpt-rabbinic-e17/merged; do
+    CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml \
+        -s ood_files=corpora/rabbinic/responsa.eval.jsonl -s data_dir=data/rabbinic-resp evaluate $m --no-grammar
+  done
+  ```
+
+  To train on them, export a whole-book sample (`--max-chars 20M`), add it to `train_files`, raise the replay to
+  match, and keep the Tannaitic text repeated so it isn't drowned out.
+- **Chat (stage 2)** isn't needed for gap filling. For a model to ask about texts, rerun the SFT of HEBREW.md § 4
+  on this model; Sefaria's [Rabbinic-Hebrew-English-Pairs](https://huggingface.co/datasets/Sefaria/Rabbinic-Hebrew-English-Pairs)
+  would add real translation pairs (check each source's licence).
