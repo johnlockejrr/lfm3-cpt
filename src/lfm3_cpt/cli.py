@@ -6,11 +6,13 @@ import json
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import click
 from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
 from . import __version__
@@ -1092,6 +1094,262 @@ def default_lm_model(cfg: Config) -> str:
         if (candidate / "config.json").exists() or (candidate / "adapter_config.json").exists():
             return str(candidate)
     return cfg.model_id
+
+
+@cli.group()
+def cloze() -> None:
+    """Gap-filling benchmark: restore a masked word among plausible alternatives.
+
+    \b
+    Build the items once, then score any number of models on the same file:
+      lfm3-cpt -c CONFIG cloze build -o cloze.jsonl --vocab-file corpora/x/train.jsonl [--proposer MODEL]
+      lfm3-cpt -c CONFIG cloze score cloze.jsonl -m MODEL_A -m MODEL_B
+    """
+
+
+def _load_lm(cfg: Config, target: str):
+    from .device import detect, resolve_precision, torch_dtype
+    from .hub import ensure_model_files
+    from .modeling import load_for_inference
+
+    info = detect()
+    device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    ensure_model_files(target, console)
+    with console.status(f"Loading {target} ..."):
+        return load_for_inference(
+            target, torch_dtype(resolve_precision(cfg.precision, info)), None, device_map, cfg.trust_remote_code
+        )
+
+
+def _read_specs(cfg: Config, specs: list[str]) -> list[str]:
+    from .corpus_files import expand, read_documents
+
+    docs: list[str] = []
+    for spec in expand(specs):
+        docs += read_documents(spec.path, cfg)
+    return docs
+
+
+@cloze.command("build")
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False), help="Items file (JSONL).")
+@click.option("--eval-file", "eval_files", multiple=True, help="Held-out text to mask (default: eval_files).")
+@click.option(
+    "--vocab-file",
+    "vocab_files",
+    multiple=True,
+    help="Text for frequencies and corpus distractors (default: the first train_files entry). Use the target "
+    "corpus only, not the replay.",
+)
+@click.option("-n", "--items", "n_items", type=int, default=400, show_default=True)
+@click.option(
+    "--corpus-distractors", type=int, default=4, show_default=True, help="Same form class, similar frequency."
+)
+@click.option("--proposer", help="Model whose own predictions become extra wrong options (the hard ones).")
+@click.option("--model-distractors", type=int, default=3, show_default=True, help="Used with --proposer.")
+@click.option("--samples", type=int, default=24, show_default=True, help="Proposer samples per item.")
+@click.option(
+    "--stop-top", type=int, default=150, show_default=True, help="The N most frequent words are never masked."
+)
+@click.option("--seed", type=int, default=0, show_default=True)
+@pass_ctx
+def cloze_build(
+    obj: Ctx,
+    output,
+    eval_files,
+    vocab_files,
+    n_items,
+    corpus_distractors,
+    proposer,
+    model_distractors,
+    samples,
+    stop_top,
+    seed,
+) -> None:
+    """Build gap-filling items from held-out text."""
+    from .cloze import Vocabulary, build_items
+    from .textnorm import Normalizer
+
+    cfg = obj.config()
+    norm = Normalizer.from_config(cfg)
+    eval_specs = list(eval_files) or list(cfg.eval_files)
+    vocab_specs = list(vocab_files) or list(cfg.train_files[:1])
+    if not eval_specs or not vocab_specs:
+        raise click.UsageError("give --eval-file and --vocab-file (or eval_files / train_files in the config)")
+    try:
+        eval_docs = [norm(d) for d in _read_specs(cfg, eval_specs)]
+        vocab_docs = [norm(d) for d in _read_specs(cfg, vocab_specs)]
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(
+        f"📚 masking {len(eval_docs):,} held-out docs ({', '.join(eval_specs)}); "
+        f"vocabulary from {', '.join(vocab_specs)}",
+        highlight=False,
+    )
+    vocab = Vocabulary.from_docs(vocab_docs, stop_top)
+
+    propose = None
+    if proposer:
+        import torch
+
+        model, tokenizer = _load_lm(cfg, proposer)
+        bos = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
+        pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        device = next(model.parameters()).device
+
+        @torch.no_grad()
+        def propose(left: str, answer: str) -> list[str]:
+            ids = bos + tokenizer(left, add_special_tokens=False)["input_ids"]
+            prompt = tokenizer.decode(ids, skip_special_tokens=True)
+            out = model.generate(
+                torch.tensor([ids], device=device),
+                attention_mask=torch.ones((1, len(ids)), dtype=torch.long, device=device),
+                do_sample=True,
+                temperature=1.0,
+                top_k=50,
+                max_new_tokens=8,
+                num_return_sequences=samples,
+                pad_token_id=pad,
+            )
+            counts: Counter = Counter()
+            for seq in out:
+                full = tokenizer.decode(seq, skip_special_tokens=True)
+                cont = full[len(prompt) :] if full.startswith(prompt) else ""
+                if cont[:1].isspace() and cont.split():
+                    counts[norm(cont.split()[0])] += 1
+            return [w for w, _ in counts.most_common()]
+
+    with console.status("Building items ...") as status:
+        items = build_items(
+            eval_docs,
+            vocab,
+            n_items,
+            seed,
+            corpus_distractors,
+            model_distractors if proposer else 0,
+            propose,
+            progress=lambda n: status.update(f"Building items: {n:,}/{n_items:,} ..."),
+        )
+    if not items:
+        raise click.ClickException("no items: the held-out text has no maskable words")
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w", encoding="utf-8") as fh:
+        for it in items:
+            fh.write(json.dumps(it, ensure_ascii=False) + "\n")
+    n_model = sum(k == "model" for it in items for k in it["kinds"].values())
+    avg = sum(len(it["candidates"]) for it in items) / len(items)
+    console.print(
+        f"🧩 {len(items):,} items, {avg:.1f} candidates each"
+        + (f" ({n_model / len(items):.1f} proposed by {proposer})" if proposer else "")
+        + f" → {output}",
+        highlight=False,
+    )
+    ex = items[0]
+    console.print(f"   e.g. {ex['text']}\n        answer {ex['answer']} • options {' / '.join(ex['candidates'])}")
+
+
+@cloze.command("score")
+@click.argument("items_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("-m", "--model", "models", multiple=True, help="Model to score (repeatable; default: this run's model).")
+@click.option(
+    "--output", type=click.Path(dir_okay=False), help="Per-item results (JSONL), one line per model and item."
+)
+@click.option("--show", type=int, default=5, show_default=True, help="Print this many misses per model.")
+@click.option("--batch-size", type=int, default=32, show_default=True)
+@pass_ctx
+def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
+    """Score models on a gap-filling items file."""
+    from .cloze import BUCKETS, score_items, summarize
+    from .evaluation import sentence_logprobs
+
+    cfg = obj.config()
+    items = [json.loads(line) for line in Path(items_file).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not items:
+        raise click.ClickException(f"{items_file} has no items")
+    targets = list(models) or [default_lm_model(cfg)]
+    summaries: dict[str, dict[str, Any]] = {}
+    out_fh = open(output, "w", encoding="utf-8") if output else None  # noqa: SIM115
+    try:
+        for target in targets:
+            model, tokenizer = _load_lm(cfg, target)
+            total = sum(len(it["candidates"]) for it in items)
+            with Progress(
+                TextColumn("{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as bar:
+                task = bar.add_task(f"scoring {Path(target).name or target}", total=total)
+
+                def logprob_fn(texts: list[str], model=model, tokenizer=tokenizer, task=task) -> list[float]:
+                    return sentence_logprobs(
+                        model, tokenizer, texts, batch_size, progress=lambda k: bar.advance(task, k)
+                    )
+
+                try:
+                    results = score_items(logprob_fn, items)
+                except ValueError as exc:
+                    raise click.ClickException(str(exc)) from exc
+            summaries[target] = summarize(results)
+            misses = [r for r in results if r["rank"] > 1][:show]
+            if misses:
+                console.print(f"[bold]Misses of {target}[/bold] (answer → model's choice):", highlight=False)
+                by_id = {it.get("id"): it for it in items}
+                for r in misses:
+                    console.print(
+                        f"  {by_id[r['id']]['text']}\n    {r['answer']} → {r['best']} (rank {r['rank']}/{r['n']})",
+                        highlight=False,
+                    )
+            if out_fh:
+                for r in results:
+                    out_fh.write(json.dumps({"model": target, **r}, ensure_ascii=False) + "\n")
+            model = tokenizer = None
+            _free_memory()
+    finally:
+        if out_fh:
+            out_fh.close()
+
+    table = Table(title=f"Gap filling: {items_file}", header_style="bold")
+    table.add_column("metric")
+    for t in targets:
+        table.add_column(Path(t).parent.name if Path(t).name in {"merged", "adapter"} else t, justify="right")
+    first = summaries[targets[0]]
+    rows: list[tuple[str, Callable[[dict[str, Any]], str]]] = [
+        ("items", lambda s: f"{s['items']:,}"),
+        ("candidates per item", lambda s: f"{s['candidates']:.1f}"),
+        ("chance (top-1)", lambda s: f"{s['chance_top1']:.1%}"),
+        ("top-1 accuracy", lambda s: f"{s['top1']:.1%}"),
+        ("top-3 accuracy", lambda s: f"{s['top3']:.1%}"),
+        ("mean rank of the answer", lambda s: f"{s['mean_rank']:.2f}"),
+        ("mean reciprocal rank", lambda s: f"{s['mrr']:.3f}"),
+    ]
+    for name, _, _ in BUCKETS:
+        if name in first["by_bucket"]:
+            rows.append(
+                (
+                    f"  top-1, {name} words (n={first['by_bucket'][name][1]})",
+                    lambda s, name=name: f"{s['by_bucket'].get(name, (0, 0))[0]:.1%}",
+                )
+            )
+    for kind in sorted(first["pairwise"]):
+        rows.append(
+            (f"  beats {kind} options (pairwise)", lambda s, kind=kind: f"{s['pairwise'].get(kind, (0, 0))[0]:.1%}")
+        )
+    for label, fmt in rows:
+        table.add_row(label, *(fmt(summaries[t]) for t in targets))
+    console.print(table)
+    if output:
+        console.print(f"📝 {output}")
+
+
+def _free_memory() -> None:
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 @cli.command()

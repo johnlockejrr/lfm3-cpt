@@ -247,6 +247,32 @@ lfm3-cpt rank runs/lfm3-1.7b-cpt-rabbinic/merged \
     --candidate הראשונה --candidate השנייה --candidate האחרונה
 ```
 
+**Gap filling (cloze).** The minimal pairs are easy: their wrong option is a random word, which usually breaks
+the sentence. Restoring a lacuna means choosing among *plausible* words, which is harder (in a first test the
+model preferred `שאינן מבושלין` to the correct `שאינן עבודין`). `cloze` builds such items once from the held-out
+tractates and scores any number of models on the same file:
+
+```bash
+# once: 400 items; wrong options of the same form class and frequency, plus 3 the Modern Hebrew model predicts
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml cloze build \
+    --vocab-file corpora/rabbinic/tannaitic.train.jsonl --proposer runs/lfm3-1.7b-cpt-he/merged \
+    -o corpora/rabbinic/cloze.jsonl
+
+# any time: compare models on the same items
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml cloze score corpora/rabbinic/cloze.jsonl \
+    -m runs/lfm3-1.7b-cpt-he/merged -m runs/lfm3-1.7b-cpt-rabbinic/merged --output runs/cloze-scores.jsonl
+```
+
+- The masked word is never one of the 150 most frequent words, and has at least four words before it.
+- Corpus options share the answer's first letter (often a prefix: ו ה ב ל מ ש כ) and ending (ין, ות, …), with a
+  similar length and frequency; proposed options are what the proposer model itself expects in the slot.
+- The table gives top-1 and top-3 accuracy against chance, the mean rank of the right word, top-1 by how frequent
+  the word is in training (rare words are where lacunae hurt), and how often the right word beats each kind of
+  wrong option. The proposer is at a disadvantage on its own proposals, so compare the proposed-options row
+  between the *other* models, or build a second file with a different proposer.
+- Real variant readings can be scored the same way: write items by hand (`{"text": "… ___ …", "answer": …,
+  "candidates": [...]}`, one per line) and run `cloze score` on them.
+
 **Responsa.** First as a measurement only: export 2% of the responsa as held-out text, without a training file,
 and score both models on it:
 

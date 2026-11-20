@@ -286,15 +286,15 @@ class Cleaner:
         if self.maqaf_to_space:
             text, n = _MAQAF_RE.subn(" ", text)
             st["maqaf -> space"] += n
+        if self.strip_punctuation:
+            text, n = _MODERN_PUNCT_RE.subn(" ", text)  # a space: "הכהן.ומלק" must not become one word
+            st["modern punctuation removed"] += n
         if self.drop_numbering:
             text, n = _LONE_LETTER_RE.subn("", text)
             n2 = 0
             if n or _LINE_NUMBER_RE.search(text):
                 text, n2 = _LINE_NUMBER_RE.subn("", text)
             st["numbering letters removed"] += n + n2
-        if self.strip_punctuation:
-            text, n = _MODERN_PUNCT_RE.subn(" ", text)  # a space: "הכהן.ומלק" must not become one word
-            st["modern punctuation removed"] += n
         text = re.sub(r"\s+([:\u05c3])", r"\1", text)  # no space before a closing colon / sof pasuq
         lines = (_SPACES_RE.sub(" ", line).strip() for line in text.splitlines())
         text = "\n".join(line for line in lines if line)

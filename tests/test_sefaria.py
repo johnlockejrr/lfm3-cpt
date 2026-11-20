@@ -280,3 +280,7 @@ def test_numbering_letters_removed():
     # abbreviations (with their geresh) and ordinary two-letter words stay
     assert c("אמר ר' יהודה ה' אלהים יד החיצונה") == "אמר ר׳ יהודה ה׳ אלהים יד החיצונה"
     assert c("כל הבכורות לא אם מה") == "כל הבכורות לא אם מה"
+
+
+def test_numbering_with_full_stop():
+    assert Cleaner(strip_punctuation=True)("לנחלה ה. אי זה הוא") == "לנחלה אי זה הוא"

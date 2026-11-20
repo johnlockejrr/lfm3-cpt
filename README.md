@@ -75,6 +75,7 @@ On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 | `export [DATASET]` | stream a Hub dataset (or raw files) into budgeted train/eval JSONL for `train_files`; `--inspect` shows its fields |
 | `distill PROMPTS` | have the original model answer prompts (Hub dataset, file, or .txt) and save them as SFT data for `sft_mix` |
 | `multiblimp LANG` | minimal pairs for 101 languages (MultiBLiMP, subject-verb agreement) for `grammar_files` |
+| `cloze build` / `cloze score` | gap-filling benchmark: restore a masked word among plausible alternatives; build once, score many models on the same items |
 | `sefaria` | Rabbinic Hebrew from Sefaria's library: one cleaned edition per book, chapters, whole tractates held out, optional minimal pairs ([docs/RABBINIC.md](docs/RABBINIC.md)) |
 | `tokenizer-check [FILES]` | how well the tokenizer covers your text, compared with English, with a recommendation |
 | `rank [MODEL]` | rank candidate fillers of a gap (`___`) by model probability: lacunae, conjectures, variants |
