@@ -73,7 +73,7 @@ Things to decide:
 
 ```bash
 lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' \
-    --strip-punctuation -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
+    --strip-punctuation --drop-editorial -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
 ```
 
 What it does:
@@ -83,13 +83,16 @@ What it does:
 - **Cleaning,** with every change counted in the output table:
   - HTML tags, Sefaria footnotes, entities, invisible bidi/control characters, Hebrew presentation forms, legacy
     markup codes (`@11`) and note markers (`*`, `[3]`, `(4)`);
-  - **native marks:** `"` inside an abbreviation becomes gershayim (`רז"ל` → `רז״ל`) and `'` after a letter
-    becomes geresh (`ר' יהודה` → `ר׳ יהודה`), including typographic quotes (`’ “ ”`) that some editions use.
-    Quote marks left after that are quotation marks, which medieval texts don't have, and are removed;
+  - **native marks:** quoted passages lose their quotation marks first (an opening quote at the start of a word,
+    a closing one at the end of a word; one-letter abbreviations like `ה'` inside the verse are allowed), and so
+    does a `'` after a final letter (ך ם ן ף ץ), since a truncation never ends in one. Then `"` inside an
+    abbreviation becomes gershayim (`רז"ל` → `רז״ל`) and `'` after a letter becomes geresh (`ר' יהודה` →
+    `ר׳ יהודה`, `תהלי'` → `תהלי׳`), including typographic quotes (`’ “ ”`). Any quote mark left is removed;
   - `--strip-punctuation`: modern editorial punctuation (`. , ; ! ?`, dashes) is removed too. The colon that
     closes a mishnah stays, as does the maqaf. Without this flag the model learns a modern edition's punctuation;
-  - `--drop-editorial` (off by default): removes `[...]`, `(...)` and `<...>`: editors' additions, variant
-    readings, source references. Look at what your editions put in brackets before deciding (below);
+  - `--drop-editorial`: removes everything in brackets (`[...]`, `(...)`, `<...>`, `{...}`, `⟨...⟩`), nested ones
+    too, and any stray bracket: editors' additions, variant readings and source references such as
+    `(תהלי׳ ע״ד י״ג)`. Medieval manuscripts have no brackets, so for this corpus it is on;
   - segments with more than 2% Latin letters are dropped (stray translations or notes).
 - **Documents** are chapters, with segments in reading order. Vowel points and cantillation are kept in the files
   and removed at training time (`strip_marks` in the config), so you can still change your mind.
@@ -121,8 +124,22 @@ for d in random.sample(docs, 3):
 E
 ```
 
-If the brackets and parentheses hold editorial matter, rerun the export with `--drop-editorial`. Then check that
-the tokenizer handles this register as well as Modern Hebrew (stage 1 measured 1.54 characters per token):
+The bracket and quote counts should be zero. Then look at the gereshes: truncations (`ר׳`, `אומ׳`, `תהלי׳`) are
+right, full words with a geresh are leftover closing quotes:
+
+```bash
+python3 - <<'E'
+import json, re
+from collections import Counter
+text = "\n".join(json.loads(l)["text"] for l in open("corpora/rabbinic/tannaitic.train.jsonl"))
+bare = Counter(re.sub(r"[\u0591-\u05c7]", "", w) for w in re.findall(r"[\u05d0-\u05ea\u0591-\u05c7]+\u05f3", text))
+print("most common:", " ".join(f"{w}({c})" for w, c in bare.most_common(25)))
+print("4+ letters:", " ".join(w for w, _ in bare.most_common() if len(w) >= 5)[:1500])
+E
+```
+
+Then check that the tokenizer handles this register as well as Modern Hebrew (stage 1 measured 1.54 characters
+per token):
 
 ```bash
 lfm3-cpt -c examples/rabbinic-tannaitic.toml tokenizer-check corpora/rabbinic/tannaitic.train.jsonl
@@ -230,7 +247,7 @@ and score both models on it:
 
 ```bash
 lfm3-cpt sefaria --preset responsa --stats      # check the selection first
-lfm3-cpt sefaria --preset responsa --strip-punctuation --eval-fraction 0.02 --max-chars 0 \
+lfm3-cpt sefaria --preset responsa --strip-punctuation --drop-editorial --eval-fraction 0.02 --max-chars 0 \
     -o corpora/rabbinic/responsa
 for m in runs/lfm3-1.7b-cpt-he/merged runs/lfm3-1.7b-cpt-rabbinic/merged runs/lfm3-1.7b-cpt-rabbinic-base/merged; do
   CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml \
@@ -244,7 +261,7 @@ transfers and nothing more is needed. If you do want them in training, add a bud
 keep the Mishnah repeated so it isn't drowned out:
 
 ```bash
-lfm3-cpt sefaria --preset responsa --strip-punctuation --eval-fraction 0.02 --max-chars 20M \
+lfm3-cpt sefaria --preset responsa --strip-punctuation --drop-editorial --eval-fraction 0.02 --max-chars 20M \
     -o corpora/rabbinic/responsa
 # then add "corpora/rabbinic/responsa.train.jsonl" to train_files, and raise both replay slices to match
 ```
@@ -266,5 +283,5 @@ step once stage 1 works; check each source's licence (many translations are CC-B
 - The minimal pairs are coarse. A swapped or replaced word is usually wrong, but some swaps are acceptable
   (Mishnaic word order is free in places). Compare models on them; don't read the absolute number as a grammar
   score.
-- Cleaning is rule-based. A closing single quote after a word (`'כך'`) would become a geresh. Hebrew editions
-  rarely quote that way, but the audit in step 2 is how you find out.
+- Cleaning is rule-based. A closing quote whose opening quote is missing, after a word not ending in a final
+  letter, still becomes a geresh; the geresh check in step 2 shows how many are left.

@@ -722,7 +722,7 @@ def sefaria(
     Examples:
       lfm3-cpt sefaria --preset tannaitic --stats
       lfm3-cpt sefaria --preset tannaitic --prefer-version Kaufmann --prefer-version 'codex Vienna' \\
-          -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
+          --strip-punctuation --drop-editorial -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
       lfm3-cpt sefaria --preset responsa --eval-fraction 0.02 --max-chars 0 -o corpora/rabbinic/responsa
     """
     from .sefaria import (

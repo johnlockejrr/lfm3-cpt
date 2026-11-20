@@ -197,8 +197,24 @@ _SQ = "'\u2018\u2019\u201a\u201b\u2032\u02b9\u02bc\u0060\u00b4"
 _GERSHAYIM_RE = re.compile(rf"([{_LETTER}][{_MARKS}]*)[{_DQ}](?=[{_LETTER}])")  # רז"ל -> רז״ל
 _GERESH_RE = re.compile(rf"([{_LETTER}][{_MARKS}]*)[{_SQ}]")  # ר' -> ר׳ ; ג'ירפה -> ג׳ירפה
 _QUOTE_RE = re.compile(rf"[{_DQ}{_SQ}]")  # what is left is quotation: not part of the medieval text
+# A quoted passage: an opening quote at the start of a word ... a closing quote at the end of a word. An
+# abbreviation mark never opens a word, so the pair is a quotation and both marks go (before the geresh rule).
+_QUOTED_RE = re.compile(
+    rf"(?:(?<=\s)|(?<=^)|(?<=[(\[:;,.\-\u05be]))[{_SQ}{_DQ}](?=[{_LETTER}])"
+    # inside: anything but quotes, except the mark of a one-letter abbreviation (ה׳, ר׳) in the verse;
+    # the closing quote follows a word of at least two letters, so it is not such a mark itself
+    rf"((?:[^{_SQ}{_DQ}\n]|(?<=[\s\u05be{_SQ}{_DQ}][{_LETTER}])[{_SQ}]){{0,400}}?(?:[{_LETTER}][{_MARKS}]*){{2,}})"
+    rf"[{_SQ}{_DQ}](?![{_LETTER}])",
+    re.M,
+)
+# A truncation (ר׳, תהלי׳) never ends in a final letter: a quote after ך ם ן ף ץ closes a quotation.
+_FINAL_QUOTE_RE = re.compile(rf"([\u05da\u05dd\u05df\u05e3\u05e5][{_MARKS}]*)[{_SQ}]")
 _MODERN_PUNCT_RE = re.compile(r"[.,;!?\u2013\u2014]|(?<=\s)-(?=\s)")
-_EDITORIAL_RE = re.compile(r"\[[^\[\]\n]{0,300}\]|\([^()\n]{0,300}\)|<[^<>\n]{0,300}>")
+_EDITORIAL_RE = re.compile(
+    r"\[[^\[\]\n]{0,300}\]|\([^()\n]{0,300}\)|<[^<>\n]{0,300}>|\{[^{}\n]{0,300}\}"
+    r"|\u27e8[^\u27e8\u27e9\n]{0,300}\u27e9|\u2039[^\u2039\u203a\n]{0,300}\u203a|\u3008[^\u3008\u3009\n]{0,300}\u3009"
+)
+_BRACKET_CHARS_RE = re.compile(r"[\[\](){}<>\u27e8\u27e9\u2039\u203a\u3008\u3009]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
 
 
@@ -236,9 +252,18 @@ class Cleaner:
         text, n = _MARKUP_CODES_RE.subn("", text)
         st["markup codes / note markers removed"] += n
         if self.drop_editorial:
-            text, n = _EDITORIAL_RE.subn("", text)
-            st["bracketed editorial passages removed"] += n
+            for _ in range(3):  # nested brackets, innermost first
+                text, n = _EDITORIAL_RE.subn("", text)
+                st["bracketed editorial passages removed"] += n
+                if not n:
+                    break
+            text, n = _BRACKET_CHARS_RE.subn("", text)
+            st["stray brackets removed"] += n
         if self.native_marks:
+            text, n = _QUOTED_RE.subn("\\1", text)
+            st["quoted passages unquoted"] += n
+            text, n = _FINAL_QUOTE_RE.subn("\\1", text)
+            st["closing quotes after a final letter removed"] += n
             text, n = _GERSHAYIM_RE.subn("\\1\u05f4", text)
             st['" -> gershayim ״'] += n
             text, n = _GERESH_RE.subn("\\1\u05f3", text)

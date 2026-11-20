@@ -119,7 +119,7 @@ def test_cleaner_native_marks():
     assert c("ﬠל") == "על"  # presentation form
     assert c('אמר<sup>1</sup><i class="footnote">הערה</i> רבי‏ יוסי @11 :') == "אמר רבי יוסי:"
     assert c("An English sentence with עברית") == ""
-    assert c.stats["' -> geresh ׳"] == 2 and c.stats["quotation marks removed"] == 2
+    assert c.stats["' -> geresh ׳"] == 2 and c.stats["quoted passages unquoted"] == 1
 
 
 def test_cleaner_options():
@@ -238,3 +238,19 @@ def test_cli_eval_only(library: Path, tmp_path: Path):
     out = CliRunner().invoke(cli, [*args, "--eval-fraction", "0.2", "--max-chars", "0"])
     assert out.exit_code == 0, out.output
     assert not Path(f"{prefix}.train.jsonl").exists() and Path(f"{prefix}.eval.jsonl").exists()
+
+
+def test_cleaner_quotations_vs_abbreviations():
+    c = Cleaner(strip_punctuation=True, drop_editorial=True)
+    # quoted verses lose both marks, even with a one-letter abbreviation inside
+    assert c("שנאמר 'ויברך אלהים את הארץ' ונאמר") == "שנאמר ויברך אלהים את הארץ ונאמר"
+    assert c("ואמר 'ה' צבאות' שמו") == "ואמר ה׳ צבאות שמו"
+    assert c("אמר ר' יוסי 'כך אמר ר' עקיבא' ושאר") == "אמר ר׳ יוסי כך אמר ר׳ עקיבא ושאר"
+    # truncations keep their geresh, even long ones; a quote after a final letter closes a quotation
+    assert c("ר' אלעזר בן עזרי' נאמר") == "ר׳ אלעזר בן עזרי׳ נאמר"
+    assert c("או' וגו' אפי' שנא'") == "או׳ וגו׳ אפי׳ שנא׳"
+    assert c("ברא את השמים ואת הארץ' ונאמר") == "ברא את השמים ואת הארץ ונאמר"
+    # source references and editorial brackets, nested too
+    assert c("שנ' (תהלי' ע\"ד י\"ג) שברת ראשי") == "שנ׳ שברת ראשי"
+    assert c("ת\"ל (ע' נחמי' ט' י\"ז) ויתנו") == "ת״ל ויתנו"
+    assert c("אמר רבי [יוסי] ⟨תוספת⟩ (שמות (ב) ג) כך") == "אמר רבי כך"
