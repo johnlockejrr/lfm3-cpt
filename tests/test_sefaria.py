@@ -85,6 +85,12 @@ def test_tractate_key_joins_parallels():
     assert work_title("Sifra, Emor, Chapter 3") == "Sifra, Emor"
     assert edition_key("Tosefta Ta'anit") == edition_key("Tosefta Taanit (Lieberman)")
     assert edition_key("Tosefta Berakhot") != edition_key("Mishnah Berakhot")
+    assert edition_key("Sifra, Tazria Parashat Nega'im, Chapter 2") != edition_key(
+        "Sifra, Tazria Parashat Nega'im, Chapter 2*"
+    )
+    assert tractate_key("Sifra, Tazria Parashat Nega'im, Chapter 2*") == tractate_key(
+        "Sifra, Tazria Parashat Nega'im, Chapter 2"
+    )
 
 
 def test_plan_books_fair_and_one_edition():

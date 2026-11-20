@@ -151,7 +151,8 @@ def work_title(book: str) -> str:
 
 
 def _letters(s: str) -> str:
-    key = re.sub(r"[^a-z0-9,]", "", s.lower()).replace(",", " ").strip()
+    # "Chapter 2*" is a different chapter from "Chapter 2" (Sefaria's mark for a repeated number), so * counts.
+    key = re.sub(r"[^a-z0-9,*]", "", s.lower()).replace(",", " ").strip()
     return _KEY_ALIASES.get(key, key)
 
 
