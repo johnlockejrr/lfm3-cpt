@@ -45,6 +45,15 @@ def form_key(word: str) -> tuple[str, str]:
     return first, word[-2:]
 
 
+def strip_vh(word: str) -> str:
+    """The word without a leading ו and/or ה: variants such as והילך/הילך or התשיעי/תשיעי, which manuscripts
+    often disagree on."""
+    for p in ("וה", "ו", "ה"):
+        if word.startswith(p) and len(word) - len(p) >= 2:
+            return word[len(p) :]
+    return word
+
+
 def _band(freq: int) -> int:
     return min(freq, 1 << 20).bit_length()
 
@@ -202,6 +211,7 @@ def score_items(
                 "rank": rank,
                 "n": len(cands),
                 "best": best,
+                "lenient": strip_vh(best) == strip_vh(it["answer"]),
                 "freq": it.get("freq"),
                 "wins": dict(wins),
                 "scores": s,
@@ -220,6 +230,7 @@ def summarize(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "candidates": sum(r["n"] for r in results) / n,
         "chance_top1": sum(1 / r["n"] for r in results) / n,
         "top1": sum(x == 1 for x in ranks) / n,
+        "top1_lenient": sum(r.get("lenient", r["rank"] == 1) for r in results) / n,
         "top3": sum(x <= 3 for x in ranks) / n,
         "mean_rank": sum(ranks) / n,
         "mrr": sum(1 / x for x in ranks) / n,

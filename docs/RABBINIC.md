@@ -266,12 +266,41 @@ CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/rabbinic-tannaitic.toml cloze score 
 - The masked word is never one of the 150 most frequent words, and has at least four words before it.
 - Corpus options share the answer's first letter (often a prefix: ו ה ב ל מ ש כ) and ending (ין, ות, …), with a
   similar length and frequency; proposed options are what the proposer model itself expects in the slot.
-- The table gives top-1 and top-3 accuracy against chance, the mean rank of the right word, top-1 by how frequent
+- The table gives top-1 and top-3 accuracy against chance, top-1 ignoring a ו/ה prefix (variants manuscripts often
+  disagree on), the mean rank of the right word, top-1 by how frequent
   the word is in training (rare words are where lacunae hurt), and how often the right word beats each kind of
   wrong option. The proposer is at a disadvantage on its own proposals, so compare the proposed-options row
   between the *other* models, or build a second file with a different proposer.
 - Real variant readings can be scored the same way: write items by hand (`{"text": "… ___ …", "answer": …,
   "candidates": [...]}`, one per line) and run `cloze score` on them.
+
+**Restoring a real lacuna.** `cloze` measures; `restore` is the tool. You give the text with the gap and what you
+know about it, and it proposes fillers from the model's own continuations (also several words), from every corpus
+word that fits, and from your own list, keeps those that fit, and ranks them with the whole text, including the
+words after the gap:
+
+```bash
+# a gap of about six letters
+lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
+    --text "אין ___ מהן לענין כתובה אבל לפרנסה גובין מהן" --letters 5-7
+
+# legible traces: first letter נ, two illegible letters, then עין
+lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
+    --text "אין ___ מהן לענין כתובה אבל לפרנסה גובין מהן" --pattern "נ??עין"
+
+# a two-word gap of 8-10 letters, only the model's proposals
+lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic/merged \
+    --text "... ___ ..." --words 2 --letters 8-10 --no-vocab
+```
+
+- `--letters` counts letters only (no spaces, vowel points, geresh); `--pattern` uses `?` for one letter, `*` for
+  any run and a space between words; `--regex` for anything else. Add `--candidate` for your own conjectures.
+- The `source` column says where each filler came from, and how often the model proposed it in its samples
+  (`model ×12`). A filler found only in the corpus is one the model would not have thought of, but still prefers.
+- The score is the probability of the whole text, which favours shorter fillers: compare candidates of similar
+  length (the letter constraint does that for you).
+- On the gap-filling benchmark this model picks the right word among 8 plausible ones 55% of the time, and has
+  it in its top 3 85% of the time: read the top of the list as suggestions to check, not as an answer.
 
 **Responsa.** First as a measurement only: export 2% of the responsa as held-out text, without a training file,
 and score both models on it:

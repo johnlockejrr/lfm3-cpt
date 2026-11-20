@@ -1121,6 +1121,37 @@ def _load_lm(cfg: Config, target: str):
         )
 
 
+def _sampler(model: Any, tokenizer: Any, samples: int, max_new_tokens: int, temperature: float = 1.0):
+    """fn(left context) -> `samples` sampled continuations, as the text that follows the context."""
+    import torch
+
+    bos = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
+    pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    device = next(model.parameters()).device
+
+    @torch.no_grad()
+    def sample(left: str) -> list[str]:
+        ids = bos + tokenizer(left, add_special_tokens=False)["input_ids"]
+        prompt = tokenizer.decode(ids, skip_special_tokens=True)
+        out = model.generate(
+            torch.tensor([ids], device=device),
+            attention_mask=torch.ones((1, len(ids)), dtype=torch.long, device=device),
+            do_sample=True,
+            temperature=temperature,
+            top_k=50,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=samples,
+            pad_token_id=pad,
+        )
+        conts = []
+        for seq in out:
+            full = tokenizer.decode(seq, skip_special_tokens=True)
+            conts.append(full[len(prompt) :] if full.startswith(prompt) else "")
+        return conts
+
+    return sample
+
+
 def _read_specs(cfg: Config, specs: list[str]) -> list[str]:
     from .corpus_files import expand, read_documents
 
@@ -1189,34 +1220,13 @@ def cloze_build(
 
     propose = None
     if proposer:
-        import torch
+        from .restore import first_words
 
         model, tokenizer = _load_lm(cfg, proposer)
-        bos = [tokenizer.bos_token_id] if tokenizer.bos_token_id is not None else []
-        pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
-        device = next(model.parameters()).device
+        sample = _sampler(model, tokenizer, samples, max_new_tokens=8)
 
-        @torch.no_grad()
         def propose(left: str, answer: str) -> list[str]:
-            ids = bos + tokenizer(left, add_special_tokens=False)["input_ids"]
-            prompt = tokenizer.decode(ids, skip_special_tokens=True)
-            out = model.generate(
-                torch.tensor([ids], device=device),
-                attention_mask=torch.ones((1, len(ids)), dtype=torch.long, device=device),
-                do_sample=True,
-                temperature=1.0,
-                top_k=50,
-                max_new_tokens=8,
-                num_return_sequences=samples,
-                pad_token_id=pad,
-            )
-            counts: Counter = Counter()
-            for seq in out:
-                full = tokenizer.decode(seq, skip_special_tokens=True)
-                cont = full[len(prompt) :] if full.startswith(prompt) else ""
-                if cont[:1].isspace() and cont.split():
-                    counts[norm(cont.split()[0])] += 1
-            return [w for w, _ in counts.most_common()]
+            return [norm(w) for w, _ in first_words(sample(left), 1).most_common()]
 
     with console.status("Building items ...") as status:
         items = build_items(
@@ -1319,6 +1329,7 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
         ("candidates per item", lambda s: f"{s['candidates']:.1f}"),
         ("chance (top-1)", lambda s: f"{s['chance_top1']:.1%}"),
         ("top-1 accuracy", lambda s: f"{s['top1']:.1%}"),
+        ("top-1, ignoring a ו/ה prefix", lambda s: f"{s['top1_lenient']:.1%}"),
         ("top-3 accuracy", lambda s: f"{s['top3']:.1%}"),
         ("mean rank of the answer", lambda s: f"{s['mean_rank']:.2f}"),
         ("mean reciprocal rank", lambda s: f"{s['mrr']:.3f}"),
@@ -1339,6 +1350,138 @@ def cloze_score(obj: Ctx, items_file, models, output, show, batch_size) -> None:
         table.add_row(label, *(fmt(summaries[t]) for t in targets))
     console.print(table)
     if output:
+        console.print(f"📝 {output}")
+
+
+@cli.command()
+@click.argument("model_path", required=False)
+@click.option("--text", required=True, help="Text with the gap marker: 'אין ___ מהן לענין כתובה'.")
+@click.option("--words", type=int, default=1, show_default=True, help="Words in the gap (0 = any number).")
+@click.option("--letters", "letters_range", help="Letters in the gap: 6, or a range 5-7.")
+@click.option("--pattern", help="Legible letters: נ??עין (? one letter, * any run, space between words).")
+@click.option("--regex", help="A regular expression the filler must match.")
+@click.option("--candidate", "candidates", multiple=True, help="Your own candidate (repeatable).")
+@click.option(
+    "--vocab-file",
+    "vocab_files",
+    multiple=True,
+    help="Also try every word of this corpus that fits (single-word gaps; default: the first train_files entry).",
+)
+@click.option("--no-vocab", is_flag=True, help="Don't take candidates from the corpus.")
+@click.option("--max-vocab", type=int, default=2000, show_default=True, help="At most this many corpus words.")
+@click.option("--samples", type=int, default=64, show_default=True, help="Model continuations to collect words from.")
+@click.option("--temperature", type=float, default=1.0, show_default=True)
+@click.option("--top", type=int, default=20, show_default=True)
+@click.option("--output", type=click.Path(dir_okay=False), help="All ranked fillers as JSON.")
+@click.option("--gap", default="___", show_default=True)
+@click.option("--batch-size", type=int, default=32, show_default=True)
+@click.option("--seed", type=int, default=0, show_default=True)
+@pass_ctx
+def restore(
+    obj: Ctx,
+    model_path,
+    text,
+    words,
+    letters_range,
+    pattern,
+    regex,
+    candidates,
+    vocab_files,
+    no_vocab,
+    max_vocab,
+    samples,
+    temperature,
+    top,
+    output,
+    gap,
+    batch_size,
+    seed,
+) -> None:
+    """Propose and rank fillers for a lacuna, constrained by its size and legible letters.
+
+    \b
+    Examples:
+      lfm3-cpt -c CONFIG restore --text "אין ___ מהן לענין כתובה" --letters 6
+      lfm3-cpt -c CONFIG restore --text "אין ___ מהן לענין כתובה" --pattern "נ??עין"
+      lfm3-cpt -c CONFIG restore --text "... ___ ..." --words 2 --letters 8-10 --no-vocab
+    """
+    import torch
+
+    from .cloze import is_word
+    from .evaluation import sentence_logprobs
+    from .restore import Constraints
+    from .restore import restore as run_restore
+    from .textnorm import Normalizer
+
+    cfg = obj.config()
+    norm = Normalizer.from_config(cfg)
+    lo = hi = None
+    if letters_range:
+        try:
+            parts = [int(x) for x in letters_range.replace("–", "-").split("-")]
+        except ValueError as exc:
+            raise click.UsageError(f"--letters: give a number or a range like 5-7, not {letters_range!r}") from exc
+        lo, hi = parts[0], parts[-1]
+    try:
+        constraints = Constraints(lo, hi, words or None, norm(pattern) if pattern else None, regex)
+    except re.error as exc:
+        raise click.UsageError(f"--regex: {exc}") from exc
+    if text.count(gap) != 1:
+        raise click.UsageError(f"the text must contain the gap marker {gap!r} exactly once")
+
+    vocab = None
+    if not no_vocab and (words in (0, 1)):
+        specs = list(vocab_files) or list(cfg.train_files[:1])
+        if specs:
+            try:
+                docs = [norm(d) for d in _read_specs(cfg, specs)]
+            except (OSError, ValueError) as exc:
+                raise click.ClickException(str(exc)) from exc
+            vocab = Counter(w for d in docs for w in d.split() if is_word(w))
+
+    target = model_path or default_lm_model(cfg)
+    model, tokenizer = _load_lm(cfg, target)
+    torch.manual_seed(seed)
+    sample = _sampler(model, tokenizer, samples, max_new_tokens=6 * ((words or 3) + 1), temperature=temperature)
+    with console.status("Proposing and ranking fillers ..."):
+        result = run_restore(
+            norm(text),
+            constraints,
+            lambda texts: sentence_logprobs(model, tokenizer, texts, batch_size),
+            sample if samples > 0 else None,
+            vocab,
+            [norm(c) for c in candidates],
+            max_vocab,
+            gap,
+            norm,
+        )
+    rows = result["rows"]
+    c = result["counts"]
+    console.print(
+        f"🧩 {len(rows)} fillers fit ({c['model']} from {samples} model samples, {c['corpus']} from the corpus, "
+        f"{c['given']} given) • scored with {target}",
+        highlight=False,
+    )
+    if not rows:
+        raise click.ClickException("no candidate fits the constraints: loosen --letters/--pattern or add --samples")
+    table = Table(title=f"{result['left'][-60:]} ___ {result['right'][:60]}", title_justify="left", header_style="bold")
+    for col, justify in (
+        ("#", "right"),
+        ("filler", "left"),
+        ("letters", "right"),
+        ("log p", "right"),
+        ("Δ", "right"),
+        ("source", "left"),
+    ):
+        table.add_column(col, justify=justify)
+    for r in rows[:top]:
+        src = ", ".join(r["sources"]) + (f" ×{r['sampled']}" if r["sampled"] else "")
+        table.add_row(str(r["rank"]), r["filler"], str(r["letters"]), f"{r['logprob']:.2f}", f"{r['delta']:.2f}", src)
+    console.print(table, highlight=False)
+    if output:
+        Path(output).write_text(
+            json.dumps({"text": text, "model": target, **result}, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
         console.print(f"📝 {output}")
 
 

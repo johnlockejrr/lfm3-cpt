@@ -126,3 +126,16 @@ def test_cli_cloze_build_and_score(tmp_path: Path, tiny_model_dir: str):
     assert out.exit_code == 0, out.output
     assert "top-1 accuracy" in out.output and "chance (top-1)" in out.output
     assert len(results.read_text(encoding="utf-8").splitlines()) == 2 * len(rows)
+
+
+def test_lenient_prefix_variants():
+    from lfm3_cpt.cloze import strip_vh
+
+    assert strip_vh("והילך") == strip_vh("הילך") == "ילך"
+    assert strip_vh("התשיעי") == "תשיעי" and strip_vh("הן") == "הן"
+    items = [
+        {"id": 1, "text": f"וקיבל {GAP} וזרק", "answer": "הילך", "candidates": ["הילך", "והילך", "שחט"], "kinds": {}}
+    ]
+    scores = {"וקיבל הילך וזרק": -2.0, "וקיבל והילך וזרק": -1.0, "וקיבל שחט וזרק": -3.0}
+    s = summarize(score_items(lambda t: [scores[x] for x in t], items))
+    assert s["top1"] == 0.0 and s["top1_lenient"] == 1.0
