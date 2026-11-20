@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -644,6 +645,183 @@ def multiblimp(lang, output, limit, tsv_path) -> None:
     kinds = sorted({r["phenomenon"] for r in rows})
     console.print(f"🧩 {n:,} pairs → {output} ({', '.join(kinds)})")
     console.print(f"   use with: -s grammar_files={output}")
+
+
+@cli.command()
+@click.option(
+    "--file",
+    "library_file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Sefaria/hebrew_library data.jsonl already on disk (default: download it once from the Hub, ~7.7 GB).",
+)
+@click.option("--preset", type=click.Choice(["tannaitic", "responsa"]), help="A ready-made selection of works.")
+@click.option("--title", "titles", multiple=True, help="Select books whose title matches this regex (repeatable).")
+@click.option("--category", "categories", multiple=True, help="Select by docCategory substring (repeatable).")
+@click.option("--exclude", "excludes", multiple=True, help="Drop books whose title/category matches (repeatable).")
+@click.option("--professional-only", is_flag=True, help="Only segments marked dataQuality=professional.")
+@click.option("--prefer-version", "prefer", multiple=True, help="Prefer editions whose title matches (repeatable).")
+@click.option("--stats", is_flag=True, help="Only show categories and the books/editions the selection catches.")
+@click.option("-o", "--output", "prefix", help="Writes PREFIX.train.jsonl, PREFIX.eval.jsonl, PREFIX.books.tsv.")
+@click.option("--eval-fraction", type=float, default=0.05, show_default=True, help="Share held out, by tractate.")
+@click.option("--eval-match", multiple=True, help="Hold out exactly these books/tractates (regex, repeatable).")
+@click.option("--min-chars", type=int, default=100, show_default=True, help="Drop shorter documents (chapters).")
+@click.option("--max-chars", "max_chars", help="Training budget (e.g. 30M), filled with whole books at random.")
+@click.option("--max-doc-chars", type=int, default=20_000, show_default=True, help="Split longer chapters.")
+@click.option(
+    "--native-marks/--keep-quotes",
+    default=True,
+    show_default=True,
+    help="Turn \" and ' in abbreviations into gershayim ״ / geresh ׳ and remove quotation marks.",
+)
+@click.option("--strip-punctuation", is_flag=True, help="Also remove modern punctuation (. , ; ! ? dashes).")
+@click.option("--drop-editorial", is_flag=True, help="Remove bracketed editorial matter: [...] (...) <...>.")
+@click.option("--max-latin", type=float, default=0.02, show_default=True, help="Drop segments with more Latin.")
+@click.option("--pairs", "pairs_path", help="Also write minimal pairs from the held-out text (JSONL).")
+@click.option("--pairs-count", type=int, default=1000, show_default=True)
+@click.option("--seed", type=int, default=42, show_default=True)
+def sefaria(
+    library_file,
+    preset,
+    titles,
+    categories,
+    excludes,
+    professional_only,
+    prefer,
+    stats,
+    prefix,
+    eval_fraction,
+    eval_match,
+    min_chars,
+    max_chars,
+    max_doc_chars,
+    native_marks,
+    strip_punctuation,
+    drop_editorial,
+    max_latin,
+    pairs_path,
+    pairs_count,
+    seed,
+) -> None:
+    """Rabbinic Hebrew training text from Sefaria's library (Sefaria/hebrew_library).
+
+    One edition per book, cleaned, rebuilt into chapters, with whole tractates held out for evaluation.
+
+    \b
+    Examples:
+      lfm3-cpt sefaria --preset tannaitic --stats
+      lfm3-cpt sefaria --preset tannaitic -o corpora/rabbinic/tannaitic --pairs corpora/rabbinic/pairs.jsonl
+      lfm3-cpt sefaria --preset responsa --eval-fraction 1 ... (see docs/RABBINIC.md)
+    """
+    from .sefaria import (
+        Cleaner,
+        Selector,
+        build_corpus,
+        download_library,
+        iter_segments,
+        library_stats,
+        make_pairs,
+        write_jsonl,
+        write_manifest,
+    )
+
+    if not stats and not prefix:
+        raise click.UsageError("give -o/--output PREFIX (or --stats)")
+    char_budget = _parse_size(max_chars)
+    try:
+        selector = Selector.from_preset(preset, titles, categories, excludes, professional_only=professional_only)
+    except (ValueError, re.error) as exc:
+        raise click.UsageError(str(exc)) from exc
+    if library_file:
+        path = Path(library_file)
+    else:
+        console.print(f"Getting {SEFARIA_LABEL} (cached after the first download) ...")
+        try:
+            path = download_library()
+        except Exception as exc:
+            raise click.ClickException(f"cannot download the Sefaria library: {exc}; use --file") from exc
+
+    with console.status(f"Reading {path.name} ...") as status:
+
+        def progress(n: int) -> None:
+            status.update(f"Reading {path.name}: {n:,} segments ...")
+
+        segments = iter_segments(path, progress)
+        if stats:
+            st = library_stats(segments, selector)
+        else:
+            cleaner = Cleaner(native_marks, strip_punctuation, drop_editorial, max_latin)
+            result = build_corpus(
+                segments,
+                selector,
+                prefer,
+                min_chars,
+                max_doc_chars,
+                eval_fraction,
+                eval_match,
+                seed,
+                cleaner,
+                char_budget,
+            )
+
+    if stats:
+        table = Table(title=f"Sefaria library: {st.lines:,} segments, top categories by size")
+        table.add_column("docCategory")
+        table.add_column("segments", justify="right")
+        table.add_column("M chars", justify="right")
+        for cat, chars in st.categories.most_common(40):
+            table.add_row(cat or "—", f"{st.category_segments[cat]:,}", f"{chars / 1e6:,.1f}")
+        console.print(table)
+        books = Table(title=f"Selected: {len(st.books)} books")
+        books.add_column("book")
+        books.add_column("category")
+        books.add_column("editions", justify="right")
+        books.add_column("largest edition")
+        books.add_column("M chars", justify="right")
+        total = 0
+        for book in sorted(st.books):
+            versions = st.books[book]
+            name, chars = versions.most_common(1)[0]
+            total += chars
+            books.add_row(book, st.book_category.get(book, ""), str(len(versions)), name, f"{chars / 1e6:.2f}")
+        console.print(books)
+        console.print(f"≈ {total / 1e6:,.1f}M characters in the largest edition of each selected book.")
+        return
+
+    if not result.books:
+        raise click.ClickException("nothing selected: run with --stats to see titles and categories")
+    # No empty files: an empty PREFIX.train.jsonl would still match train_files globs (--max-chars 0 = eval only).
+    for split in ("train", "eval"):
+        Path(f"{prefix}.{split}.jsonl").unlink(missing_ok=True)
+    n_train = write_jsonl(result.train, f"{prefix}.train.jsonl") if result.train else 0
+    n_eval = write_jsonl(result.eval, f"{prefix}.eval.jsonl") if result.eval else 0
+    write_manifest(result.books, f"{prefix}.books.tsv")
+    chars = {s: sum(len(d["text"]) for d in getattr(result, s)) for s in ("train", "eval")}
+    table = Table(title=f"Sefaria export: {len(result.books)} books", show_header=False)
+    if n_train:
+        table.add_row("train", f"{prefix}.train.jsonl • {n_train:,} docs • {chars['train'] / 1e6:,.2f}M chars")
+    if n_eval:
+        held = sorted({b.book for b in result.books if b.split == "eval"})
+        shown = ", ".join(held[:6]) + (f" … (+{len(held) - 6})" if len(held) > 6 else "")
+        table.add_row("eval", f"{prefix}.eval.jsonl • {n_eval:,} docs • {chars['eval'] / 1e6:,.2f}M chars")
+        table.add_row("held out", shown)
+    unused = sum(b.split == "unused" for b in result.books)
+    if unused:
+        table.add_row("budget", f"{unused:,} books left out to stay within {max_chars} characters")
+    table.add_row("manifest", f"{prefix}.books.tsv (edition chosen per book, duplicates dropped)")
+    for what, n in cleaner.stats.items():
+        if n:
+            table.add_row("cleaning", f"{what}: {n:,}")
+    console.print(table)
+    if pairs_path:
+        if not result.eval:
+            console.print("[yellow]No held-out text, so no pairs written.[/yellow]")
+        else:
+            pairs = make_pairs(result.eval, pairs_count, seed)
+            write_jsonl(pairs, pairs_path)
+            console.print(f"🧩 {len(pairs):,} minimal pairs from the held-out text → {pairs_path}")
+
+
+SEFARIA_LABEL = "Sefaria/hebrew_library data.jsonl"
 
 
 # ---------------------------------------------------------------------------------------------------------------

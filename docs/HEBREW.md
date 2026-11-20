@@ -290,4 +290,3 @@ E
 
 **Total time on the RTX 3090:** about 9 hours for stage 1, about 15–20 minutes for each SFT run, plus the
 `distill` runs.
-

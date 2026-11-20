@@ -1,0 +1,41 @@
+# Tannaitic (Mishnaic) Hebrew on top of the Modern Hebrew model: a second CPT stage (docs/RABBINIC.md).
+#
+#   corpora/rabbinic/tannaitic.{train,eval}.jsonl  Mishnah, Tosefta, halakhic midrashim   (lfm3-cpt sefaria)
+#   corpora/rabbinic/replay-he.train.jsonl         a slice of Hebrew Wikipedia             (keeps Modern Hebrew)
+#   corpora/rabbinic/replay-en.train.jsonl         a slice of FineWeb-Edu                  (keeps English)
+#   corpora/rabbinic/pairs.jsonl                   word-order / word-choice pairs from held-out tractates
+#
+# The Tannaitic corpus is small (a few million tokens), so it is repeated (@3) and the replay slices are sized
+# from it: roughly half its size in Modern Hebrew and a third in English (see docs/RABBINIC.md, step 2).
+model_id = "runs/lfm3-1.7b-cpt-he/merged"   # the stage-1 Modern Hebrew model, not the chat model
+target_language = "he"
+data_dir = "data/rabbinic"
+output_dir = "runs/lfm3-1.7b-cpt-rabbinic"
+
+[data]
+train_files = [
+    "corpora/rabbinic/tannaitic.train.jsonl@3",
+    "corpora/rabbinic/replay-he.train.jsonl",
+    "corpora/rabbinic/replay-en.train.jsonl",
+]
+eval_files = ["corpora/rabbinic/tannaitic.eval.jsonl"]
+# Out-of-distribution: held-out Modern Hebrew. The question this row answers is "did the Mishnah push out
+# Modern Hebrew?". Score other sets (responsa, English) separately with `evaluate -s ood_files=...`.
+ood_files = ["corpora/he/wiki.eval.jsonl"]
+file_min_chars = 100            # a short mishnah chapter is a real document
+# Vowel points and cantillation are removed so pointed and unpointed editions tokenize the same way; geresh ׳,
+# gershayim ״ and maqaf stay (the export already turned ' and " into ׳ and ״).
+strip_marks = ["hebrew_cantillation", "hebrew_points"]
+grammar_files = ["corpora/rabbinic/pairs.jsonl"]
+
+[lora]
+# The embeddings were trained in stage 1 and the script is the same: keep them frozen. With a few million
+# tokens, training 262M embedding parameters would mostly overfit.
+train_embeddings = false
+
+[training]
+num_train_epochs = 1
+learning_rate = 1e-4
+eval_steps = 100
+save_steps = 200
+save_total_limit = 3

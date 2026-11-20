@@ -1,51 +1,11 @@
-cd lfm3-cpt
-
-cat > .gitignore <<'EOF'
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.eggs/
-
-# Virtual environments
 .venv/
-venv/
-env/
-
-# Tool caches
+__pycache__/
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
-.coverage
-coverage.xml
-htmlcov/
-
-# Project outputs: cached corpora, runs, checkpoints, merged models
 data/
 runs/
-checkpoints/
-*-lora/
-*-merged/
-wandb/
 
-# Model weights (never commit these)
-*.safetensors
-*.bin
-*.pt
-*.pth
-*.gguf
-
-# Secrets / local config
-.env
-*.local.toml
-
-# Editors / OS
-.vscode/
-.idea/
-*.swp
-.DS_Store
-EOF
+# local corpora and training outputs, never committed
 corpora/
-raw/
+*.progress.json

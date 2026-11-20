@@ -81,6 +81,7 @@ lfm3-cpt -p rtx3090 -s train_articles=30000 -s data_dir=data/tr-30k train -o run
 
 > **A complete, tested Hebrew walkthrough** (CPT → mixed SFT, with results and lessons learned) is in
 > [docs/HEBREW.md](docs/HEBREW.md).
+> To continue from it into Mishnaic (Tannaitic) Hebrew with Sefaria's texts, see [docs/RABBINIC.md](docs/RABBINIC.md).
 
 ### 3.1 Quick look: Wikipedia only
 
