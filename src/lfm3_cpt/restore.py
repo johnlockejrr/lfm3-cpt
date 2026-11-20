@@ -111,8 +111,13 @@ def restore(
     gap: str = GAP,
     norm: Callable[[str], str] = lambda s: s,
     pmi: float = 0.0,
+    rerank: int = 300,
 ) -> dict[str, Any]:
-    """Collect, filter and rank fillers. Returns the ranked rows and how many candidates each source gave."""
+    """Collect, filter and rank fillers. Returns the ranked rows and how many candidates each source gave.
+
+    With `pmi`, the correction only reorders the `rerank` best fillers by raw probability (0 = all of them): in an
+    open search over a whole corpus, it would otherwise lift words that are merely rare (and the rarest words of a
+    corpus include its oddities) above words that actually fit."""
     left, right = split_gap(text, gap)
     sources: dict[str, set[str]] = {}
 
@@ -143,19 +148,33 @@ def restore(
     fillers = list(sources)
     texts = [" ".join(x for x in (left, f, right) if x) for f in fillers]
     scores = logprob_fn(texts)
-    priors = dict(zip(fillers, logprob_fn(fillers), strict=True)) if pmi else {}
     rows = [
         {
             "filler": f,
-            "logprob": s - pmi * priors[f] if pmi else s,
+            "logprob": s,
             "raw_logprob": s,
+            "raw_rank": 0,
             "letters": letters(f),
             "sources": sorted(sources[f]),
             "sampled": seen.get(f, 0),
         }
         for f, s in zip(fillers, scores, strict=True)
     ]
-    rows.sort(key=lambda r: r["logprob"], reverse=True)
+    rows.sort(key=lambda r: r["raw_logprob"], reverse=True)
+    for i, r in enumerate(rows, 1):
+        r["raw_rank"] = i
+    if pmi:
+        head = rows[:rerank] if rerank else rows
+        priors = logprob_fn([r["filler"] for r in head])
+        for r, prior in zip(head, priors, strict=True):
+            r["logprob"] = r["raw_logprob"] - pmi * prior
+        head.sort(key=lambda r: r["logprob"], reverse=True)
+        tail = rows[len(head) :]
+        if tail:  # below the reranked head, in raw order, and scored so that they stay below it
+            floor = min(r["logprob"] for r in head)
+            for r in tail:
+                r["logprob"] = floor - (head[-1]["raw_logprob"] - r["raw_logprob"]) - 1e-6
+        rows = head + tail
     best = rows[0]["logprob"]
     for i, r in enumerate(rows, 1):
         r["rank"], r["delta"] = i, r["logprob"] - best

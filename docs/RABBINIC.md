@@ -301,7 +301,14 @@ lfm3-cpt -c examples/rabbinic-tannaitic.toml restore runs/lfm3-1.7b-cpt-rabbinic
   length (the letter constraint does that for you).
 - Raw probability also favours *common* words (`על`, `אבל`, `אדם`) over the rare word the passage needs. `--pmi α`
   subtracts α times the filler's probability on its own; `cloze score … --pmi 0.5 --pmi 1` shows which α helps
-  on the benchmark (one column per α, all from one scoring pass), and that α is the one to use in `restore`.
+  on the benchmark (one column per α, all from one scoring pass). On the Tannaitic items α = 0.5 was best: top-1
+  60.5% → 63.2%, words unseen in training 32% → 48%; at α = 1 it overshoots.
+- In `restore` the correction only reorders the 300 best fillers by raw probability (`--rerank`): over tens of
+  thousands of corpus words it would otherwise lift words that are merely rare. The `raw #` column shows how far
+  each filler moved.
+- Test the tool where you know the answer: add it with `--candidate`, and its rank is shown even outside the top
+  list. An open search is much harder than the benchmark's 8 options: expect the right word in the top 10-20, not
+  first, when only the number of letters is known; legible letters narrow it down dramatically.
 - Give as much surrounding text as you have: the words after the gap count as much as those before it.
 - On the gap-filling benchmark this model picks the right word among 8 plausible ones 55% of the time, and has
   it in its top 3 85% of the time: read the top of the list as suggestions to check, not as an answer.

@@ -1401,7 +1401,15 @@ def cloze_score(obj: Ctx, items_file, models, output, show, pmis, batch_size) ->
     type=float,
     default=0.0,
     show_default=True,
-    help="Subtract α·log p(filler alone): 0 = raw probability, 1 = mutual information; corrects the pull of common words.",
+    help="Subtract α·log p(filler alone): 0 = raw probability, 1 = mutual information; corrects the pull of common "
+    "words. 0.5 was best on the Tannaitic benchmark.",
+)
+@click.option(
+    "--rerank",
+    type=int,
+    default=300,
+    show_default=True,
+    help="With --pmi, reorder only this many best fillers by raw probability (0 = all).",
 )
 @click.option("--samples", type=int, default=64, show_default=True, help="Model continuations to collect words from.")
 @click.option("--temperature", type=float, default=1.0, show_default=True)
@@ -1424,6 +1432,7 @@ def restore(
     no_vocab,
     max_vocab,
     pmi,
+    rerank,
     samples,
     temperature,
     top,
@@ -1490,29 +1499,34 @@ def restore(
             gap,
             norm,
             pmi,
+            rerank,
         )
     rows = result["rows"]
     c = result["counts"]
     console.print(
         f"🧩 {len(rows)} fillers fit ({c['model']} from {samples} model samples, {c['corpus']} from the corpus, "
-        f"{c['given']} given) • scored with {target}" + (f" • pmi α={pmi:g}" if pmi else ""),
+        f"{c['given']} given) • scored with {target}"
+        + (f" • pmi α={pmi:g} on the best {rerank or 'all'}" if pmi else ""),
         highlight=False,
     )
     if not rows:
         raise click.ClickException("no candidate fits the constraints: loosen --letters/--pattern or add --samples")
     table = Table(title=f"{result['left'][-60:]} ___ {result['right'][:60]}", title_justify="left", header_style="bold")
-    for col, justify in (
-        ("#", "right"),
-        ("filler", "left"),
-        ("letters", "right"),
-        ("log p", "right"),
-        ("Δ", "right"),
-        ("source", "left"),
-    ):
+    cols = [("#", "right"), ("filler", "left"), ("letters", "right"), ("score" if pmi else "log p", "right")]
+    cols += [("raw #", "right")] if pmi else []
+    cols += [("Δ", "right"), ("source", "left")]
+    for col, justify in cols:
         table.add_column(col, justify=justify)
-    for r in rows[:top]:
+    given_set = {norm(c) for c in candidates}
+    shown = rows[:top] + [r for r in rows[top:] if r["filler"] in given_set]
+    for r in shown:
         src = ", ".join(r["sources"]) + (f" ×{r['sampled']}" if r["sampled"] else "")
-        table.add_row(str(r["rank"]), r["filler"], str(r["letters"]), f"{r['logprob']:.2f}", f"{r['delta']:.2f}", src)
+        filler = f"[bold]{r['filler']}[/bold]" if r["filler"] in given_set else r["filler"]
+        if len(shown) > top and r is shown[top]:
+            table.add_section()  # your candidates below the top list
+        cells = [str(r["rank"]), filler, str(r["letters"]), f"{r['logprob']:.2f}"]
+        cells += [str(r["raw_rank"])] if pmi else []
+        table.add_row(*cells, f"{r['delta']:.2f}", src)
     console.print(table, highlight=False)
     if output:
         Path(output).write_text(

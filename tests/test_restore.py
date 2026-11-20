@@ -108,3 +108,52 @@ def test_restore_pmi_reorders():
     pmi = restore("אין ___ מהן", Constraints(), fn, given=["על", "נפרעין"], pmi=1.0)
     assert raw["rows"][0]["filler"] == "על" and pmi["rows"][0]["filler"] == "נפרעין"
     assert pmi["rows"][0]["raw_logprob"] == -10.0 and pmi["rows"][0]["logprob"] == -1.0
+
+
+def test_restore_pmi_only_reranks_the_head():
+    # "שומעין" fits badly (raw last) but is rare alone: with rerank=2 it can't jump over the plausible ones
+    lp = {
+        "אין נפרעין מהן": -10.0,
+        "אין מוציאין מהן": -9.5,
+        "אין שומעין מהן": -14.0,
+        "נפרעין": -9.0,
+        "מוציאין": -6.0,
+        "שומעין": -30.0,
+    }
+    fn = lambda texts: [lp[t] for t in texts]  # noqa: E731
+    given = ["נפרעין", "מוציאין", "שומעין"]
+    everything = restore("אין ___ מהן", Constraints(), fn, given=given, pmi=1.0, rerank=0)
+    assert everything["rows"][0]["filler"] == "שומעין"  # the failure the two stages avoid
+    head = restore("אין ___ מהן", Constraints(), fn, given=given, pmi=1.0, rerank=2)
+    assert [r["filler"] for r in head["rows"]] == ["נפרעין", "מוציאין", "שומעין"]
+    assert [r["raw_rank"] for r in head["rows"]] == [2, 1, 3]
+    assert [r["rank"] for r in head["rows"]] == [1, 2, 3]
+
+
+def test_cli_restore_shows_given_candidates_below_top(tmp_path: Path, tiny_model_dir: str):
+    vocab = tmp_path / "train.jsonl"
+    words = " ".join(f"מילה{c}" for c in "אבגדהוזחטיכלמנסעפצקרשת")
+    vocab.write_text(json.dumps({"text": words}, ensure_ascii=False) + "\n")
+    base = ["-p", "cpu-debug", "-s", f"model_id={tiny_model_dir}", "-s", f"output_dir={tmp_path / 'run'}"]
+    out = CliRunner().invoke(
+        cli,
+        [
+            *base,
+            "restore",
+            tiny_model_dir,
+            "--text",
+            "אין ___ מהן",
+            "--vocab-file",
+            str(vocab),
+            "--candidate",
+            "נפרעין",
+            "--samples",
+            "0",
+            "--top",
+            "2",
+            "--pmi",
+            "0.5",
+        ],
+    )
+    assert out.exit_code == 0, out.output
+    assert "נפרעין" in out.output and "raw #" in out.output
