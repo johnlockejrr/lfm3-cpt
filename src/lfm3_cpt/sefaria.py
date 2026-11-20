@@ -218,6 +218,10 @@ _EDITORIAL_RE = re.compile(
 )
 _BRACKET_CHARS_RE = re.compile(r"[\[\](){}<>\u27e8\u27e9\u2039\u203a\u3008\u3009]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+# Numbering left in the text: a lone letter anywhere (Hebrew has no one-letter words without a geresh, which
+# the native-marks step has already added to real abbreviations), and 11-29 at the start of a line.
+_LONE_LETTER_RE = re.compile(rf"(?<!\S)[{_LETTER}][{_MARKS}]*(?=\s|:|$)", re.M)
+_LINE_NUMBER_RE = re.compile(r"^(?:י[א-ט]|ט[וז]|כ[א-ט]?)(?=\s)", re.M)
 # Maqaf (and a hyphen standing in for it between Hebrew words) joins words in pointed editions: כל־אדם.
 _MAQAF_RE = re.compile(rf"\u05be|(?<=[{_LETTER}{_MARKS}])[-\u2010\u2011](?=[{_LETTER}])")
 
@@ -232,6 +236,7 @@ class Cleaner:
       (ר' -> ר׳, רז"ל -> רז״ל, also typographic quotes); quote marks left after that are quotation, which the
       manuscripts and early prints don't have, and are removed;
     * `maqaf_to_space` (default): the maqaf (and a hyphen between Hebrew words) becomes a space;
+    * `drop_numbering` (default): mishnah/halakhah numbers left in the text: lone letters, 11-29 at line start;
     * `strip_punctuation`: also remove modern editorial punctuation (. , ; ! ? dashes); the colon that closes
       a mishnah or a verse is kept;
     * `drop_editorial`: remove bracketed editorial matter ([...], (...), <...>): additions, variants, sources;
@@ -242,6 +247,7 @@ class Cleaner:
     strip_punctuation: bool = False
     drop_editorial: bool = False
     maqaf_to_space: bool = True
+    drop_numbering: bool = True
     max_latin: float = 0.02
     stats: Counter = field(default_factory=Counter)
 
@@ -280,6 +286,12 @@ class Cleaner:
         if self.maqaf_to_space:
             text, n = _MAQAF_RE.subn(" ", text)
             st["maqaf -> space"] += n
+        if self.drop_numbering:
+            text, n = _LONE_LETTER_RE.subn("", text)
+            n2 = 0
+            if n or _LINE_NUMBER_RE.search(text):
+                text, n2 = _LINE_NUMBER_RE.subn("", text)
+            st["numbering letters removed"] += n + n2
         if self.strip_punctuation:
             text, n = _MODERN_PUNCT_RE.subn(" ", text)  # a space: "הכהן.ומלק" must not become one word
             st["modern punctuation removed"] += n

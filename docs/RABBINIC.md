@@ -93,6 +93,8 @@ What it does:
   - `--strip-punctuation`: modern editorial punctuation (`. , ; ! ?`, dashes) is removed too. The colon that
     closes a mishnah stays. Without this flag the model learns a modern edition's punctuation;
   - removed material (tags, brackets, punctuation) leaves a space, so neighbouring words never get glued;
+  - **numbering** left in the text is removed: lone letters (Hebrew has no one-letter word without a geresh, so
+    `ח החשוד…` is mishnah 8) and 11-29 at the start of a line;
   - `--drop-editorial`: removes everything in brackets (`[...]`, `(...)`, `<...>`, `{...}`, `⟨...⟩`), nested ones
     too, and any stray bracket: editors' additions, variant readings and source references such as
     `(תהלי׳ ע״ד י״ג)`. Medieval manuscripts have no brackets, so for this corpus it is on;

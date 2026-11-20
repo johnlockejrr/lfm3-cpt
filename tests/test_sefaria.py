@@ -47,8 +47,8 @@ def _rows() -> list[dict]:
     rows.append(row("Tosefta Berakhot 1:1", M2 + ' ותו רז"ל', version="Vilna", cat="Tosefta"))
     rows.append(row("Tosefta Berakhot 1:2", M3 + " ותו", version="Vilna", cat="Tosefta"))
     # Sifra: one Sefaria "book" per chapter
-    rows.append(row("Sifra, Emor, Chapter 1 1", M3 + " א", version="Venice 1545", cat="Midrash"))
-    rows.append(row("Sifra, Emor, Chapter 2 1", M3 + " ב", version="Venice 1545", cat="Midrash"))
+    rows.append(row("Sifra, Emor, Chapter 1 1", M3 + " אחת", version="Venice 1545", cat="Midrash"))
+    rows.append(row("Sifra, Emor, Chapter 2 1", M3 + " שתים", version="Venice 1545", cat="Midrash"))
     rows.append(row("Bartenura on Mishnah Berakhot 1:1:1", "פירוש", cat="Mishnah/Commentary"))
     rows.append(row("Mishnah Berurah 1:1", "הלכה", cat="Halakhah"))
     rows.append(row("Shabbat 2a:1", "גמרא", cat="Talmud"))
@@ -270,3 +270,13 @@ def test_maqaf_becomes_space():
     assert c("כָּל־אָדָם בֵּית-הַמִּקְדָּשׁ") == "כָּל אָדָם בֵּית הַמִּקְדָּשׁ"
     assert c.stats["maqaf -> space"] == 2
     assert Cleaner(maqaf_to_space=False)("כל־אדם") == "כל־אדם"
+
+
+def test_numbering_letters_removed():
+    c = Cleaner()
+    assert c("ח החשוד על הבכורות אין לוקחין ממנו") == "החשוד על הבכורות אין לוקחין ממנו"
+    assert c("בכור לכהן ואינו בכור לנחלה ה אי זה הוא בכור") == "בכור לכהן ואינו בכור לנחלה אי זה הוא בכור"
+    assert c("יב רבי מאיר אומר") == "רבי מאיר אומר"
+    # abbreviations (with their geresh) and ordinary two-letter words stay
+    assert c("אמר ר' יהודה ה' אלהים יד החיצונה") == "אמר ר׳ יהודה ה׳ אלהים יד החיצונה"
+    assert c("כל הבכורות לא אם מה") == "כל הבכורות לא אם מה"
