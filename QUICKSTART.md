@@ -79,6 +79,9 @@ lfm3-cpt -p rtx3090 -s train_articles=30000 -s data_dir=data/tr-30k train -o run
 
 ## 3. Modern Hebrew
 
+> **A complete, tested Hebrew walkthrough** (CPT → mixed SFT, with results and lessons learned) is in
+> [docs/HEBREW.md](docs/HEBREW.md).
+
 ### 3.1 Quick look: Wikipedia only
 
 The same recipe as Turkish, in one config. A fast first impression of how LFM3 takes to Hebrew:
