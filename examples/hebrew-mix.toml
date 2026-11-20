@@ -39,3 +39,6 @@ sft_dataset = "ashercn97/hebrew_alpaca"
 sft_filter_column = ""
 sft_eval_split = ""          # no test split: hold out sft_eval_holdout of it
 sft_eval_holdout = 0.03
+# Keep the model answering English questions in English (QUICKSTART § 3.4): mix in the original model's own
+# answers, made with `lfm3-cpt distill`. "@0.2" = 20% of the final training set.
+# sft_mix = ["corpora/sft/en-no-robots.jsonl@0.2", "corpora/sft/en-gsm8k.jsonl@0.1"]

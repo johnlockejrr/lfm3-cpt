@@ -24,7 +24,7 @@ from typing import Any
 
 from datasets import Dataset, load_dataset, load_from_disk
 
-from .config import Config
+from .config import Config, parse_mix_entry
 from .corpus_files import expand, fingerprint
 from .textnorm import Normalizer
 
@@ -45,6 +45,8 @@ SFT_DATA_KEYS = (
     "sft_system_prompt",
     "sft_max_length",
     "sft_eval_file",
+    "sft_mix",
+    "sft_mix_eval",
     "unicode_form",
     "strip_marks",
     "seed",
@@ -158,7 +160,9 @@ def is_local_dataset(name: str) -> bool:
 
 
 def _load_local(spec: str) -> Dataset:
-    paths = [str(s.path) for s in expand([spec])]
+    paths = [str(s.path) for s in expand([spec]) if s.path.stat().st_size > 0]
+    if not paths:
+        raise ValueError(f"{spec}: the file is empty (if it came from `distill`, no answers were kept)")
     suffix = Path(paths[0]).suffix.lower()
     builder = LOCAL_BUILDERS.get(suffix)
     if builder is None:
@@ -180,7 +184,15 @@ def _hub_loader(cfg: Config) -> Mapping[str, Dataset]:
     return out
 
 
+def load_mix_source(source: str) -> Dataset:
+    if is_local_dataset(source):
+        return _load_local(source)
+    name, _, subset = source.partition(":")
+    return load_dataset(name, subset or None, split="train")
+
+
 SftLoader = Callable[[Config], Mapping[str, Dataset]]
+MixLoader = Callable[[str], Dataset]
 
 
 def sft_dir(cfg: Config) -> Path:
@@ -189,7 +201,8 @@ def sft_dir(cfg: Config) -> Path:
 
 def sft_signature(cfg: Config) -> dict[str, Any]:
     sig = {k: getattr(cfg, k) for k in SFT_DATA_KEYS}
-    local = [x for x in (cfg.sft_dataset, cfg.sft_eval_file) if x and is_local_dataset(x)]
+    mix_sources = [parse_mix_entry(e)[0] for e in cfg.sft_mix]
+    local = [x for x in (cfg.sft_dataset, cfg.sft_eval_file, *mix_sources) if x and is_local_dataset(x)]
     if local:
         try:
             sig["files"] = fingerprint(local)
@@ -212,10 +225,17 @@ def _row_key(row: Mapping[str, Any]) -> str:
 
 
 def _convert(
-    ds: Dataset, cfg: Config, tokenizer: Any, stats: dict[str, int], log: Callable[[str], None] = print
+    ds: Dataset,
+    cfg: Config,
+    tokenizer: Any,
+    stats: dict[str, int],
+    log: Callable[[str], None] = print,
+    apply_filter: bool = True,
 ) -> list[dict[str, Any]]:
     norm = Normalizer.from_config(cfg)
-    if cfg.sft_filter_column and cfg.sft_filter_column not in ds.column_names and is_local_dataset(cfg.sft_dataset):
+    if not apply_filter:
+        pass
+    elif cfg.sft_filter_column and cfg.sft_filter_column not in ds.column_names and is_local_dataset(cfg.sft_dataset):
         log(f"[dim]No {cfg.sft_filter_column!r} column in the local SFT file: language filter skipped[/dim]")
     elif cfg.sft_filter_column:
         if cfg.sft_filter_column not in ds.column_names:
@@ -254,6 +274,7 @@ def prepare_sft_data(
     force: bool = False,
     loader: SftLoader | None = None,
     log: Callable[[str], None] = print,
+    mix_loader: MixLoader | None = None,
 ) -> SftBundle:
     if not force and is_sft_prepared(cfg):
         log(f"[dim]Using cached SFT data in {sft_dir(cfg)}[/dim]")
@@ -274,6 +295,8 @@ def prepare_sft_data(
         if cfg.sft_eval_split and not is_local_dataset(cfg.sft_dataset):
             raise ValueError(f"split {cfg.sft_eval_split!r} not loaded")
         n_eval = max(1, int(len(train) * (cfg.sft_eval_holdout or 0.05)))
+        if cfg.sft_max_eval > 0:
+            n_eval = min(n_eval, cfg.sft_max_eval)  # rows beyond the eval cap stay in training
         eval_ds, train = train.select(range(n_eval)), train.select(range(n_eval, len(train)))
     # Never evaluate on a training example (a separate test split could overlap with train).
     train_keys = {_row_key(r) for r in train}
@@ -286,6 +309,11 @@ def prepare_sft_data(
         eval_ds = eval_ds.select(range(min(cfg.sft_max_eval, len(eval_ds))))
     if len(eval_ds) == 0:
         raise RuntimeError("the SFT eval set is empty; set sft_eval_split='' to hold out part of train")
+    train = train.add_column("source", ["main"] * len(train))
+    eval_ds = eval_ds.add_column("source", ["main"] * len(eval_ds))
+    if cfg.sft_mix:
+        train, eval_ds, mix_stats = _add_mix(cfg, tokenizer, train, eval_ds, mix_loader or load_mix_source, log)
+        stats["mix"] = mix_stats
 
     root = sft_dir(cfg)
     root.mkdir(parents=True, exist_ok=True)
@@ -298,6 +326,59 @@ def prepare_sft_data(
     }
     (root / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
     return SftBundle(train, eval_ds, metadata)
+
+
+def _add_mix(
+    cfg: Config,
+    tokenizer: Any,
+    train: Dataset,
+    eval_ds: Dataset,
+    mix_loader: MixLoader,
+    log: Callable[[str], None],
+) -> tuple[Dataset, Dataset, dict[str, Any]]:
+    """Mix extra sources into train (as shares or repeats) and hold out `sft_mix_eval` of each for evaluation."""
+    import random
+
+    rng = random.Random(cfg.seed)
+    n_main = len(train)
+    entries = [parse_mix_entry(e) for e in cfg.sft_mix]
+    share_total = sum(w for _, w in entries if w is not None and w < 1)
+    seen = {_row_key(r) for r in train} | {_row_key(r) for r in eval_ds}
+    train_parts, eval_parts, out_stats = [train], [eval_ds], {}
+    for source, weight in entries:
+        log(f"Mixing in {source}" + (f" @{weight:g}" if weight is not None else "") + " ...")
+        st = {"filtered_out": 0, "unusable": 0, "duplicates": 0, "too_long": 0}
+        rows = [
+            r
+            for r in _convert(mix_loader(source), cfg, tokenizer, st, log, apply_filter=False)
+            if _row_key(r) not in seen
+        ]
+        rng.shuffle(rows)
+        n_eval = min(cfg.sft_mix_eval, max(0, len(rows) - 1))
+        held, pool = rows[:n_eval], rows[n_eval:]
+        if not pool:
+            raise RuntimeError(f"no usable examples in sft_mix source {source!r} ({st})")
+        if weight is None:
+            chosen = pool
+        elif weight >= 1:
+            chosen = pool * int(weight)
+        else:
+            want = round(weight * n_main / (1 - share_total))
+            if want > len(pool):
+                log(f"[yellow]{source}: wanted {want} examples for @{weight:g}, only {len(pool)} available[/yellow]")
+            chosen = rng.sample(pool, min(want, len(pool)))
+        for r in chosen + held:
+            r["source"] = source
+        if chosen:
+            train_parts.append(Dataset.from_list(chosen))
+        if held:
+            eval_parts.append(Dataset.from_list(held))
+        out_stats[source] = {"train": len(chosen), "eval": len(held), "available": len(rows), **st}
+    from datasets import concatenate_datasets
+
+    train = concatenate_datasets(train_parts).shuffle(seed=cfg.seed)
+    eval_ds = concatenate_datasets(eval_parts).shuffle(seed=cfg.seed)  # generation samples cover every source
+    return train, eval_ds, out_stats
 
 
 def load_sft_data(cfg: Config) -> SftBundle:

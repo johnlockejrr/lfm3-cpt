@@ -276,6 +276,13 @@ For other languages:
   make a good stage 2 (`examples/sft-translation.example.jsonl`). The model learns to translate into the
   language CPT taught it. chrF against the reference is then a real MT metric. Read `generations.jsonl`
   alongside it.
+- **Keeping the original languages: `sft_mix` and `distill`.** An SFT set entirely in the new language teaches the
+  model to answer *every* question in it: in the Hebrew run, "What is the capital of Australia?" got a Hebrew
+  answer, and a wrong one. The remedy mirrors replay in stage 1. `lfm3-cpt distill` has the original model answer
+  English prompts (human-written No Robots prompts, GSM8K maths with `--verify-number`), and `sft_mix` adds those
+  answers to stage 2 (`"file.jsonl@0.2"` = 20% of the training set, `"@2"` = every example twice). They remind the
+  model of its own knowledge, its English, and its step-by-step style. `sft_mix_eval` (default 50) examples of each
+  source are held out, and the results report **answers in the question's language**.
 - **Answer-language check:** `target_language` drives the "answers in …" metric. Turkish and Latin are detected
   by frequent words; Hebrew/Aramaic (`he`, `arc`), Arabic, Syriac and Samaritan by script. Script detection
   cannot tell Hebrew from Aramaic, so for Hebrew → Aramaic translation that rate only catches drift into
@@ -332,6 +339,8 @@ All settings can be set in a TOML file (`-c`), with `-s key=value`, and many wit
 | `sft_dataset` | `"CohereLabs/aya_dataset"` | Hub id or local file/glob |
 | `sft_eval_file` | `""` | separate SFT evaluation file |
 | `sft_filter_column` / `sft_filter_value` | `language_code` / `tur` | row filter; skipped for local files without that column |
+| `sft_mix` | `[]` | extra SFT sources: `"path_or_hub_id@0.2"` (share of the training set) or `"@2"` (repeat) |
+| `sft_mix_eval` | `50` | held-out examples per mixed source, added to the evaluation |
 
 With TOML, sections such as `[data]`, `[lora]`, `[training]` and `[sft]` are only for readability: every key is
 global. See `examples/*.toml`.

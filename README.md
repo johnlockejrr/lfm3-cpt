@@ -73,6 +73,7 @@ On the Strix Halo use `-p strix-halo`. For a smoke test on any machine, use
 | `sft` | stage 2: Turkish instruction tuning on top of the CPT model (or `--from base` / a path) |
 | `chat [MODEL]` | interactive multi-turn chat; defaults to the run's SFT model, else its CPT model |
 | `export [DATASET]` | stream a Hub dataset (or raw files) into budgeted train/eval JSONL for `train_files`; `--inspect` shows its fields |
+| `distill PROMPTS` | have the original model answer prompts (Hub dataset, file, or .txt) and save them as SFT data for `sft_mix` |
 | `multiblimp LANG` | minimal pairs for 101 languages (MultiBLiMP, subject-verb agreement) for `grammar_files` |
 | `tokenizer-check [FILES]` | how well the tokenizer covers your text, compared with English, with a recommendation |
 | `rank [MODEL]` | rank candidate fillers of a gap (`___`) by model probability: lacunae, conjectures, variants |

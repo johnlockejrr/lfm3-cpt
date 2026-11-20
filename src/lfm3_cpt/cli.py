@@ -149,6 +149,10 @@ def prepare(obj: Ctx, data_dir, train_articles, eval_articles, ood_pages, no_gra
         sft = prepare_sft_data(cfg, tokenizer, force=force, log=console.print)
         table = Table(title=f"SFT conversations ({cfg.sft_dataset})", show_header=False)
         for key, value in sft.metadata["stats"].items():
+            if key == "mix":
+                for source, m in value.items():
+                    table.add_row(f"+ {source}", f"{m['train']:,} train / {m['eval']:,} eval (of {m['available']:,})")
+                continue
             table.add_row(key, f"{value:,}" if isinstance(value, int) else str(value))
         console.print(table)
         example = sft.train[0]
@@ -310,7 +314,7 @@ def evaluate(obj: Ctx, model_path, adapter, run_grammar, json_out) -> None:
         )
     bundle = prepare_data(cfg, tokenizer, log=console.print)
     results = evaluate_all(model, tokenizer, bundle, cfg, console, "eval", cfg.run_grammar)
-    console.print(summary_table(None, results, title=f"Evaluation of {adapter or target}"))
+    console.print(summary_table(None, results, title=f"Evaluation of {adapter or target}", single_label="value"))
     if json_out:
         Path(json_out).write_text(json.dumps({"model": target, "adapter": adapter, **results}, indent=2))
         console.print(f"📝 {json_out}")
@@ -460,6 +464,18 @@ def _report_one(name: str, results: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------
+def _exit_after_streaming(streamed_from_hub: bool) -> None:
+    """`datasets` streaming leaves background download threads behind when we stop reading early (--inspect, a
+    budget), and Python then waits for them, sometimes for minutes. All files are closed at this point, so exit
+    directly. Set LFM3_CPT_NO_HARD_EXIT=1 to disable."""
+    import os
+
+    if streamed_from_hub and os.environ.get("LFM3_CPT_NO_HARD_EXIT", "") not in {"1", "true", "yes"}:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+
 def _parse_size(value: str | None) -> int | None:
     """'250M' -> 250_000_000, '1.5G' -> 1_500_000_000, '20000' -> 20000."""
     if value is None:
@@ -548,6 +564,7 @@ def export(
                 for line in describe(record):
                     console.print(line, highlight=False, markup=False)
             console.print("\nUse --field (and --item-field for lists of records) to choose the text.")
+            _exit_after_streaming(bool(source.dataset))
             return
     except Exception as exc:  # unknown dataset, missing config, no network...
         raise click.ClickException(f"cannot read {source.describe()}: {exc}") from exc
@@ -598,6 +615,7 @@ def export(
         raise click.ClickException(f"no text found in field {text_field!r}: run with --inspect to see the records")
     if stats.exhausted and (max_docs or max_chars):
         console.print("[yellow]The source ran out before the budget was reached.[/yellow]")
+    _exit_after_streaming(bool(source.dataset))
 
 
 @cli.command()
@@ -686,6 +704,150 @@ def tokenizer_check(obj: Ctx, files, texts, model_path, examples) -> None:
     for w in words:
         pieces = [tokenizer.decode([i]) for i in tokenizer(w, add_special_tokens=False)["input_ids"]]
         console.print(f"  {w} → {pieces}", highlight=False)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+@cli.command()
+@click.argument("prompts")
+@click.option("--model", "model_path", help="Model that answers (default: the configured base model).")
+@click.option("-o", "--output", required=True, help='JSONL to write ({"messages": [...]} per line), for sft_mix.')
+@click.option("--subset", help="Dataset subset, e.g. main for openai/gsm8k.")
+@click.option("--split", default="train", show_default=True)
+@click.option("--prompt-field", help="Column holding the prompt (default: detected, as for SFT data).")
+@click.option("--max", "max_prompts", type=int, help="Use at most N prompts (a random sample).")
+@click.option(
+    "--language",
+    default="en",
+    show_default=True,
+    help="Keep only answers in this language: en, he, tr, la, ar, ... or any.",
+)
+@click.option(
+    "--verify-number",
+    is_flag=True,
+    help="Maths sets with a reference answer (GSM8K): keep only answers with the same final number.",
+)
+@click.option(
+    "--thinking/--no-thinking",
+    default=False,
+    show_default=True,
+    help="Let the model reason first; only its final answer is saved (needs more --max-new-tokens).",
+)
+@click.option("--max-new-tokens", type=int, default=1024, show_default=True)
+@click.option("--batch-size", type=int, default=32, show_default=True)
+@click.option("--repetition-penalty", type=float, default=1.1, show_default=True)
+@click.option("--resume", is_flag=True, help="Continue an interrupted run (appends to OUTPUT).")
+@click.option("--seed", type=int, default=42, show_default=True)
+@pass_ctx
+def distill(
+    obj: Ctx,
+    prompts,
+    model_path,
+    output,
+    subset,
+    split,
+    prompt_field,
+    max_prompts,
+    language,
+    verify_number,
+    thinking,
+    max_new_tokens,
+    batch_size,
+    repetition_penalty,
+    resume,
+    seed,
+) -> None:
+    """Have a model (by default the original LFM3) answer PROMPTS, and save the answers as SFT data.
+
+    PROMPTS is a Hub dataset, a local .jsonl/.json/.csv/.parquet file, or a .txt file with one prompt per line.
+    Only the prompts are used. Answers that do not finish, are empty, or are not in --language are dropped.
+
+    \b
+    Examples:
+      lfm3-cpt distill HuggingFaceH4/no_robots -o corpora/sft/en-no-robots.jsonl --max 3000
+      lfm3-cpt distill openai/gsm8k --subset main --thinking --max-new-tokens 2048 \\
+          --verify-number -o corpora/sft/en-gsm8k.jsonl --max 1000
+    """
+    import random
+
+    from datasets import load_dataset
+
+    from .device import configure_backend, detect, resolve_precision, torch_dtype
+    from .distill import distill as run_distill
+    from .distill import messages_preview, prompts_from_records, prompts_from_text
+    from .hub import ensure_model_files
+    from .modeling import load_for_inference
+    from .sft_data import _load_local, is_local_dataset
+
+    cfg = obj.config()
+    try:
+        if prompts.endswith(".txt"):
+            items = prompts_from_text(prompts)
+        elif is_local_dataset(prompts):
+            items = prompts_from_records(_load_local(prompts), prompt_field)
+        else:
+            items = prompts_from_records(load_dataset(prompts, subset, split=split), prompt_field)
+    except Exception as exc:
+        raise click.ClickException(f"cannot read prompts from {prompts}: {exc}") from exc
+    if not items:
+        raise click.ClickException("no prompts found (try --prompt-field)")
+    if verify_number and not any(it.get("reference") for it in items):
+        raise click.UsageError("--verify-number needs reference answers in the dataset")
+    if max_prompts and len(items) > max_prompts:
+        items = random.Random(seed).sample(items, max_prompts)
+
+    info = detect()
+    configure_backend(info)
+    target = model_path or cfg.model_id
+    ensure_model_files(target, console)
+    device_map = "auto" if info.backend in {"cuda", "rocm"} else None
+    with console.status(f"Loading {target} ..."):
+        model, tokenizer = load_for_inference(
+            target, torch_dtype(resolve_precision(cfg.precision, info)), None, device_map, cfg.trust_remote_code
+        )
+    from .callbacks import make_progress
+
+    console.print(
+        f"🧪 {len(items):,} prompts from {prompts} • answered by {target} • thinking {'on' if thinking else 'off'}"
+    )
+    with make_progress(console) as progress:
+        task = progress.add_task("distilling", total=len(items))
+
+        def show(st) -> None:
+            progress.update(task, completed=st.processed)
+
+        stats = run_distill(
+            model,
+            tokenizer,
+            items,
+            output,
+            {"enable_thinking": thinking},
+            batch_size,
+            256,
+            max_new_tokens,
+            repetition_penalty,
+            language,
+            verify_number,
+            resume,
+            target,
+            show,
+        )
+    table = Table(title=f"Distilled → {output}", show_header=False)
+    for key, value in stats.to_dict().items():
+        table.add_row(key.replace("_", " "), f"{value:,}")
+    console.print(table)
+    if stats.kept:
+        first = json.loads(Path(output).read_text(encoding="utf-8").splitlines()[0])
+        console.print(
+            f"💬 {messages_preview(first['messages'][:-1])}\n   → {messages_preview(first['messages'])}",
+            highlight=False,
+        )
+        console.print(f"   use with: -s 'sft_mix={output}@0.25'")
+    if stats.unfinished > stats.kept:
+        console.print(
+            "[yellow]Most answers did not finish: raise --max-new-tokens (especially with --thinking).[/yellow]"
+        )
+    if stats.kept == 0:
+        raise click.ClickException(f"no answers were kept, so {output} has nothing to mix in (see the reasons above)")
 
 
 # ---------------------------------------------------------------------------------------------------------------

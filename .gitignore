@@ -48,3 +48,4 @@ wandb/
 .DS_Store
 EOF
 corpora/
+raw/

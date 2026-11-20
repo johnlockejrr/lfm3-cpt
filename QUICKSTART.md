@@ -202,6 +202,41 @@ for m in LiquidAI/LFM3-1.7B runs/lfm3-1.7b-cpt-he/merged; do
 done
 ```
 
+### 3.4 Keep English: mix the original model's own answers into stage 2
+
+An all-Hebrew SFT set teaches the model to answer *everything* in Hebrew, and its short answers teach it to skip
+the working on maths problems. The remedy is to let the original LFM3 answer English prompts (*distillation*), and
+mix those answers into stage 2:
+
+```bash
+# English answers to human-written prompts (No Robots: 10,000 instructions, CC BY-NC 4.0)
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt distill HuggingFaceH4/no_robots \
+    -o corpora/sft/en-no-robots.jsonl --max 3000
+
+# Step-by-step maths (GSM8K, MIT): only answers whose final number matches the reference are kept
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt distill openai/gsm8k --subset main --verify-number \
+    -o corpora/sft/en-gsm8k.jsonl --max 1500
+```
+
+Each run prints how many answers were kept, and why the others were dropped (unfinished, wrong language, wrong
+number). `--resume` continues an interrupted run. Then repeat stage 2 with the mix, into a new folder so you can
+compare it with the run before:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/hebrew-mix.toml \
+    -s 'sft_mix=corpora/sft/en-no-robots.jsonl@0.2,corpora/sft/en-gsm8k.jsonl@0.1' \
+    sft --from runs/lfm3-1.7b-cpt-he/merged -o runs/he-sft-mix --merge
+lfm3-cpt report runs/lfm3-1.7b-cpt-he runs/he-sft-mix
+```
+
+`@0.2` means 20% of the final training set. Some examples of each mixed source are held out for evaluation, so
+the results table gains a row **answers in the question's language**. For the run without the mix, that is
+where English questions answered in Hebrew show up. Then ask both models the English questions from § 3.3 again:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt chat runs/he-sft-mix/sft/merged --temperature 0
+```
+
 ---
 
 ## 4. Classical Latin from your own files

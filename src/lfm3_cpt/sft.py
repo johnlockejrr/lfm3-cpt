@@ -170,7 +170,10 @@ def evaluate_chat(
                 cfg.sft_no_repeat_ngram,
             )
             out["generation"] = summarize_generations(
-                answers, [r["completion"][0]["content"] for r in gen_rows], cfg.target_language
+                answers,
+                [r["completion"][0]["content"] for r in gen_rows],
+                cfg.target_language,
+                prompts=[r["prompt"][-1]["content"] for r in gen_rows],
             )
             out["answers"] = answers
     if lm_eval and is_prepared(cfg):
@@ -206,11 +209,18 @@ def _write_generations(path: Path, bundle: SftBundle, cfg: Config, before: dict 
                         "after": a["text"],
                         "after_language": al,
                         "after_finished": a["finished"],
+                        "source": row.get("source", "main"),
                     },
                     ensure_ascii=False,
                 )
                 + "\n"
             )
+
+
+def _trainer_view(ds):
+    """Only the columns TRL should see (the `source` bookkeeping column is ours)."""
+    extra = [c for c in ds.column_names if c not in {"prompt", "completion"}]
+    return ds.remove_columns(extra) if extra else ds
 
 
 def _strip_answers(block: dict | None) -> dict | None:
@@ -270,6 +280,8 @@ def run_sft(
         f"💬 {s['train_examples']} train / {s['eval_examples']} eval conversations from {cfg.sft_dataset} "
         f"(dropped: {s.get('too_long', 0)} too long, {s.get('duplicates', 0)} duplicates, {s.get('unusable', 0)} unusable)"
     )
+    for source, m in (s.get("mix") or {}).items():
+        console.print(f"   + {source}: {m['train']} train / {m['eval']} eval (of {m['available']} usable)")
     hf_datasets.disable_progress_bars()
 
     with console.status("Loading model ..."):
@@ -296,8 +308,8 @@ def run_sft(
     trainer = SFTTrainer(
         model=model,
         args=build_sft_stage_config(stage, precision, info),
-        train_dataset=with_template_kwargs(bundle.train, cfg),
-        eval_dataset=with_template_kwargs(bundle.eval, cfg),
+        train_dataset=with_template_kwargs(_trainer_view(bundle.train), cfg),
+        eval_dataset=with_template_kwargs(_trainer_view(bundle.eval), cfg),
         processing_class=tokenizer,
         peft_config=peft_config,
     )

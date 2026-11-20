@@ -135,6 +135,11 @@ class Config:
     # sft_dataset may also be a local .jsonl/.json/.csv/.tsv/.parquet file (or glob), e.g. verse-aligned
     # translation pairs; its eval set is then held out (sft_eval_holdout) unless sft_eval_file is given.
     sft_eval_file: str = ""
+    # Extra SFT sources mixed into stage 2, e.g. English answers from `lfm3-cpt distill`, so the model keeps answering
+    # in the language it is asked in. Each entry is a local file/glob or Hub id ("id:subset" for a subset), with an
+    # optional weight: "@0.25" = 25% of the final training set, "@2" = every example twice, none = all once.
+    sft_mix: list[str] = field(default_factory=list)
+    sft_mix_eval: int = 50  # held-out examples per mixed source, added to the evaluation set
     sft_train_split: str = "train"
     sft_eval_split: str = "test"  # "" -> hold out sft_eval_holdout of train instead
     sft_filter_column: str = "language_code"  # "" -> no filter
@@ -239,6 +244,9 @@ class Config:
                 raise ValueError(f"{name} must be > 0")
         if not 0 <= self.sft_eval_holdout < 1:
             raise ValueError("sft_eval_holdout must be in [0, 1)")
+        shares = [w for _, w in (parse_mix_entry(e) for e in self.sft_mix) if w is not None and w < 1]
+        if sum(shares) >= 1:
+            raise ValueError("the sft_mix shares (weights below 1) must add up to less than 1")
         if bool(self.sft_user_column) != bool(self.sft_assistant_column):
             raise ValueError("set both sft_user_column and sft_assistant_column, or neither")
 
@@ -309,6 +317,21 @@ PROFILES: dict[str, dict[str, Any]] = {
         "sft_max_new_tokens": 8,
     },
 }
+
+
+def parse_mix_entry(entry: str) -> tuple[str, float | None]:
+    """'corpora/sft/en.jsonl@0.25' -> ('corpora/sft/en.jsonl', 0.25); no weight -> None (all examples once)."""
+    source, sep, weight = entry.rpartition("@")
+    if not sep:
+        return entry, None
+    try:
+        w = float(weight)
+    except ValueError:
+        return entry, None  # an @ that is part of the name
+    if w <= 0 or (w >= 1 and w != int(w)):
+        raise ValueError(f"sft_mix weight must be a share in (0, 1) or a whole repeat count: {entry!r}")
+    return source, w
+
 
 _FIELDS = {f.name: f for f in fields(Config)}
 

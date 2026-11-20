@@ -424,13 +424,27 @@ def generate_answers(
 
 
 def summarize_generations(
-    answers: Sequence[dict[str, Any]], references: Sequence[str], target: str = "tr"
+    answers: Sequence[dict[str, Any]],
+    references: Sequence[str],
+    target: str = "tr",
+    prompts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    """Generation metrics. With `prompts`, the target-language rate counts only questions asked in the target
+    language, and `language_match` is the share of answers in the same language as their question (target or
+    English), which catches a model that answers English questions in the new language."""
     n = len(answers)
     langs = [answer_language(a["text"], target) for a in answers]
     out: dict[str, Any] = {"n": n, "target_language": target}
     if target:
-        out["target_rate"] = langs.count(target) / n if n else float("nan")
+        if prompts is not None:
+            plangs = [answer_language(p, target) for p in prompts]
+            in_target = [a for a, p in zip(langs, plangs, strict=True) if p == target]
+            out["target_rate"] = in_target.count(target) / len(in_target) if in_target else float("nan")
+            scored = [(a, p) for a, p in zip(langs, plangs, strict=True) if p in {target, "en"}]
+            out["language_match"] = sum(a == p for a, p in scored) / len(scored) if scored else float("nan")
+            out["prompt_languages"] = plangs
+        else:
+            out["target_rate"] = langs.count(target) / n if n else float("nan")
     if target == "tr":
         out["turkish_rate"] = out["target_rate"]  # name used by earlier versions
     return {
