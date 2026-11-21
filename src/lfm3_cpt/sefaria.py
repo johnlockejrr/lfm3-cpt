@@ -22,7 +22,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import random
 import re
 import unicodedata
 from collections import Counter, defaultdict
@@ -607,83 +606,5 @@ def write_manifest(books: list[BookInfo], path: str | Path) -> None:
             )
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Minimal pairs from held-out text
-# ---------------------------------------------------------------------------------------------------------------
-
-_WORD_RE = re.compile(r"^[\u05d0-\u05ea\u0591-\u05c7\u05f3\u05f4]+$")
-_SPLIT_RE = re.compile(r"(?<=[.:;?!])\s+")
-
-
-def _is_word(w: str) -> bool:
-    return bool(_WORD_RE.match(w)) and sum("א" <= c <= "ת" for c in w) >= 2
-
-
-def make_pairs(docs: Iterable[dict[str, str]], n: int = 1000, seed: int = 0, words=(6, 30)) -> list[dict[str, str]]:
-    """Coarse minimal pairs from real sentences: the original against (a) two neighbouring words swapped,
-    (b) one word replaced by another word of the corpus with a similar frequency. Both corruptions are usually,
-    but not always, wrong; the score measures how well the model knows the register, not a grammar rule."""
-    rng = random.Random(seed)
-    sentences: list[list[str]] = []
-    freq: Counter = Counter()
-    for d in docs:
-        for line in d["text"].splitlines():
-            for sent in _SPLIT_RE.split(line):
-                toks = sent.split()
-                freq.update(t for t in toks if _is_word(t))
-                if words[0] <= len(toks) <= words[1]:
-                    sentences.append(toks)
-                elif len(toks) > words[1]:
-                    start = rng.randrange(0, len(toks) - words[1] + 1)
-                    sentences.append(toks[start : start + words[1]])
-    if not sentences:
-        return []
-    by_band: dict[int, list[str]] = defaultdict(list)
-    for w, c in freq.items():
-        by_band[min(c.bit_length(), 12)].append(w)
-    for band in by_band.values():
-        band.sort()
-    rng.shuffle(sentences)
-    pairs: list[dict[str, str]] = []
-    want = {"word_order": n // 2, "word_substitution": n - n // 2}
-    seen: set[tuple[str, str]] = set()
-    for toks in sentences:
-        if not any(want.values()):
-            break
-        good = " ".join(toks)
-        kind = "word_order" if want["word_order"] >= want["word_substitution"] else "word_substitution"
-        if want[kind] == 0:
-            kind = "word_order" if kind == "word_substitution" else "word_substitution"
-        bad_toks = _swap(toks, rng) if kind == "word_order" else _substitute(toks, freq, by_band, rng)
-        if bad_toks is None:
-            continue
-        bad = " ".join(bad_toks)
-        if bad == good or (good, bad) in seen:
-            continue
-        seen.add((good, bad))
-        pairs.append({"sentence_good": good, "sentence_bad": bad, "phenomenon": kind})
-        want[kind] -= 1
-    return pairs
-
-
-def _swap(toks: list[str], rng: random.Random) -> list[str] | None:
-    spots = [i for i in range(len(toks) - 1) if _is_word(toks[i]) and _is_word(toks[i + 1]) and toks[i] != toks[i + 1]]
-    if not spots:
-        return None
-    i = rng.choice(spots)
-    out = list(toks)
-    out[i], out[i + 1] = out[i + 1], out[i]
-    return out
-
-
-def _substitute(toks: list[str], freq: Counter, by_band: dict[int, list[str]], rng: random.Random) -> list[str] | None:
-    spots = [i for i, t in enumerate(toks) if _is_word(t)]
-    rng.shuffle(spots)
-    for i in spots[:5]:
-        band = by_band.get(min(freq[toks[i]].bit_length(), 12), [])
-        choices = [w for w in rng.sample(band, min(len(band), 20)) if w != toks[i] and w not in toks]
-        if choices:
-            out = list(toks)
-            out[i] = choices[0]
-            return out
-    return None
+# Minimal pairs from held-out text live in `pairs.py` (any language); re-exported here for compatibility.
+from .pairs import make_pairs  # noqa: E402, F401

@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from typing import Any
 
 GAP = "___"
-_LETTER = "א-ת"
 _MARKS_RE = re.compile(r"[֑-ׇ׳״]")
 
 
@@ -34,9 +33,9 @@ def pattern_regex(pattern: str) -> re.Pattern:
     out = []
     for ch in pattern:
         if ch == "?":
-            out.append(f"[{_LETTER}A-Za-z]")
+            out.append(r"[^\W\d_]")  # one letter, any script (also Maltese ċ ġ ħ ż)
         elif ch == "*":
-            out.append(f"[{_LETTER}A-Za-z]*")
+            out.append(r"[^\W\d_'\-]*")
         elif ch.isspace():
             out.append(r"\s+")
         else:

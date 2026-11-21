@@ -48,7 +48,7 @@ def test_build_items_with_proposer():
 
     def proposer(left: str, answer: str) -> list[str]:
         calls.append(left)
-        return [answer, "מבושלין", "tanned", "טהורין"]
+        return [answer, "מבושלין", "1905", "טהורין"]
 
     items = build_items(
         _docs(10), vocab, n_items=8, seed=3, corpus_distractors=2, model_distractors=2, proposer=proposer
@@ -59,7 +59,7 @@ def test_build_items_with_proposer():
         assert it["answer"] in it["candidates"] and len(set(it["candidates"])) == len(it["candidates"])
         assert it["answer"] not in it["kinds"]
         model_opts = [w for w, k in it["kinds"].items() if k == "model"]
-        assert model_opts == ["מבושלין", "טהורין"]  # the answer and the non-Hebrew word are skipped
+        assert model_opts == ["מבושלין", "טהורין"]  # the answer and the number are skipped
         assert len(it["text"].split(GAP)[0].split()) >= 4
 
 

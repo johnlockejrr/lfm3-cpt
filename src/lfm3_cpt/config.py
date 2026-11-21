@@ -24,6 +24,7 @@ TARGET_LANGUAGES = {
     "ar": "Arabic",
     "syc": "Syriac",
     "sam": "Samaritan script",
+    "mt": "Maltese",
     "": "unspecified",
 }
 

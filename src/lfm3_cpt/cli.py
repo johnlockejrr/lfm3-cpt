@@ -1096,6 +1096,47 @@ def default_lm_model(cfg: Config) -> str:
     return cfg.model_id
 
 
+@cli.command("pairs")
+@click.argument("files", nargs=-1, required=True)
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False), help="Pairs file (JSONL).")
+@click.option("-n", "--count", type=int, default=1000, show_default=True)
+@click.option("--seed", type=int, default=0, show_default=True)
+@pass_ctx
+def pairs_cmd(obj: Ctx, files, output, count, seed) -> None:
+    """Minimal pairs from held-out text, for any language: for `grammar_files`.
+
+    Each pair is a real sentence against the same sentence with two neighbouring words swapped, or one word
+    replaced by another word of similar frequency. Use held-out text only (e.g. PREFIX.eval.jsonl).
+
+    \b
+    Example:
+      lfm3-cpt -c CONFIG pairs corpora/mt/press.eval.jsonl -o corpora/mt/pairs.jsonl
+    """
+    from .pairs import make_pairs
+    from .textnorm import Normalizer
+
+    cfg = obj.config()
+    norm = Normalizer.from_config(cfg)
+    try:
+        docs = [{"text": norm(d)} for d in _read_specs(cfg, list(files))]
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    rows = make_pairs(docs, count, seed)
+    if not rows:
+        raise click.ClickException("no pairs: the text has no sentences of 6 or more words")
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    kinds = Counter(r["phenomenon"] for r in rows)
+    console.print(
+        f"🧩 {len(rows):,} pairs from {len(docs):,} documents ({', '.join(f'{k} {v}' for k, v in kinds.items())}) → {output}",
+        highlight=False,
+    )
+    ex = rows[0]
+    console.print(f"   ✅ {ex['sentence_good']}\n   ❌ {ex['sentence_bad']}", highlight=False)
+
+
 @cli.group()
 def cloze() -> None:
     """Gap-filling benchmark: restore a masked word among plausible alternatives.

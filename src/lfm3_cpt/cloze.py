@@ -19,20 +19,23 @@ from __future__ import annotations
 
 import math
 import random
-import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from .words import is_abbreviation
+from .words import is_word as _is_word
+
 GAP = "___"
-_HEB_WORD = re.compile(r"^[א-ת]+$")
-_PREFIXES = set("ובהלמשכ")
+_PREFIXES = set("ובהלמשכ")  # Hebrew one-letter prefixes
 BUCKETS = (("unseen", 0, 0), ("rare (1-3)", 1, 3), ("medium (4-30)", 4, 30), ("common (31+)", 31, math.inf))
 
 
 def is_word(w: str) -> bool:
-    return bool(_HEB_WORD.match(w))
+    """A word that can be masked or offered: letters in any script, with inner apostrophes/hyphens (Maltese
+    `il-kelma`, `ta'`), but not a Hebrew abbreviation (`ר׳`, `רז״ל`)."""
+    return _is_word(w) and not is_abbreviation(w)
 
 
 def bucket(freq: int) -> str:
@@ -40,9 +43,12 @@ def bucket(freq: int) -> str:
 
 
 def form_key(word: str) -> tuple[str, str]:
-    """(first letter if it can be a prefix, last two letters): words that could fill the same grammatical slot."""
-    first = word[0] if word[0] in _PREFIXES else ""
-    return first, word[-2:]
+    """(prefix, last two letters): words that could fill the same grammatical slot. The prefix is a Hebrew
+    one-letter prefix (ו ה ב ל מ ש כ) or a hyphenated article or particle (Maltese `il-`, `l-`, `għall-`)."""
+    w = word.lower()
+    if "-" in w[:-1]:
+        return w[: w.index("-") + 1], w[-2:]
+    return (w[0] if w[0] in _PREFIXES else ""), w[-2:]
 
 
 def strip_vh(word: str) -> str:

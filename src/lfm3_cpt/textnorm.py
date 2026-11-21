@@ -34,18 +34,28 @@ MARK_SETS: dict[str, frozenset[str]] = {
     "latin_macrons": frozenset({"̄", "̆"}),
 }
 
+# Not removals but unifications, listed in `strip_marks` like the mark sets: one spelling of a character that
+# texts type in several ways. Maltese writes `ta'`, `għall-`: a typographic apostrophe would make a second word.
+REPLACEMENT_SETS: dict[str, dict[str, str]] = {
+    "typographic_apostrophes": {"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u0060": "'", "\u00b4": "'"},
+}
+
 UNICODE_FORMS = ("NFC", "NFD", "NFKC", "NFKD", "none")
 
 
 def validate(form: str, strip: list[str] | tuple[str, ...]) -> None:
     if form not in UNICODE_FORMS:
         raise ValueError(f"unicode_form must be one of {UNICODE_FORMS}, got {form!r}")
-    unknown = [s for s in strip if s not in MARK_SETS]
+    unknown = [s for s in strip if s not in MARK_SETS and s not in REPLACEMENT_SETS]
     if unknown:
-        raise ValueError(f"unknown strip_marks {unknown}; choose from {sorted(MARK_SETS)}")
+        raise ValueError(f"unknown strip_marks {unknown}; choose from {sorted([*MARK_SETS, *REPLACEMENT_SETS])}")
 
 
 def normalize(text: str, form: str = "NFC", strip: list[str] | tuple[str, ...] = ()) -> str:
+    for name in strip:
+        if name in REPLACEMENT_SETS:
+            text = text.translate(str.maketrans(REPLACEMENT_SETS[name]))
+    strip = [s for s in strip if s in MARK_SETS]
     if strip:
         marks = frozenset().union(*(MARK_SETS[s] for s in strip))
         # Decompose first so precomposed letters (e.g. "ā") expose their combining marks.
