@@ -63,6 +63,13 @@ def quiet_libraries() -> None:
     if os.environ.get("LFM3_CPT_SHOW_WARNINGS", "") not in {"1", "true", "yes"}:
         for pattern in LIBRARY_DEPRECATIONS:
             warnings.filterwarnings("ignore", message=pattern, category=FutureWarning)
+        # "resource_tracker: There appear to be N leaked semaphore objects": printed at exit by multiprocessing's
+        # helper process after a Hub stream is cut off (the OS frees the semaphores anyway). That process is
+        # separate, so the filter has to reach it through the environment it inherits when it starts.
+        rule = "ignore:resource_tracker:UserWarning"
+        current = os.environ.get("PYTHONWARNINGS", "")
+        if rule not in current:
+            os.environ["PYTHONWARNINGS"] = f"{current},{rule}" if current else rule
     try:
         from huggingface_hub.utils import disable_progress_bars
 

@@ -2,6 +2,7 @@
 
 import dataclasses
 import io
+import os
 import time
 import warnings
 from types import SimpleNamespace
@@ -136,3 +137,18 @@ def test_checkpointing_args_use_this_versions_name():
         with warnings.catch_warnings():
             warnings.simplefilter("error", FutureWarning)  # no deprecation from our own arguments
             SFTConfig(output_dir="/tmp/x", report_to="none", use_cpu=True, bf16=False, **args)
+
+
+def test_quiet_libraries_silences_resource_tracker(monkeypatch):
+    from lfm3_cpt.hub import quiet_libraries
+
+    monkeypatch.delenv("LFM3_CPT_SHOW_WARNINGS", raising=False)
+    monkeypatch.setenv("PYTHONWARNINGS", "default")
+    quiet_libraries()
+    quiet_libraries()  # idempotent
+    assert os.environ["PYTHONWARNINGS"] == "default,ignore:resource_tracker:UserWarning"
+
+    monkeypatch.setenv("LFM3_CPT_SHOW_WARNINGS", "1")
+    monkeypatch.delenv("PYTHONWARNINGS")
+    quiet_libraries()
+    assert "PYTHONWARNINGS" not in os.environ
