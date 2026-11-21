@@ -1096,6 +1096,96 @@ def default_lm_model(cfg: Config) -> str:
     return cfg.model_id
 
 
+@cli.command("clean")
+@click.argument("files", nargs=-1, required=True)
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), help="Write cleaned copies here (same names).")
+@click.option("--dry-run", is_flag=True, help="Only report what would be removed.")
+@click.option(
+    "--max-bad", type=float, default=0.3, show_default=True, help="Drop a line above this share of non-words."
+)
+@click.option(
+    "--boilerplate-docs", type=int, default=5, show_default=True, help="A line in this many documents is boilerplate."
+)
+@click.option(
+    "--min-keep", type=float, default=0.5, show_default=True, help="Drop a document keeping less than this share."
+)
+@click.option("--show", type=int, default=3, show_default=True, help="Examples of removed lines per file and reason.")
+@pass_ctx
+def clean_cmd(obj: Ctx, files, output_dir, dry_run, max_bad, boilerplate_docs, min_keep, show) -> None:
+    """Remove OCR garbage, boilerplate and ruined documents from JSONL corpora (any language).
+
+    Clean training files only: keep the held-out files as they are, so that models trained before and after
+    cleaning are compared on the same test.
+
+    \b
+    Examples:
+      lfm3-cpt clean corpora/maltese/*.train.jsonl --dry-run
+      lfm3-cpt clean corpora/maltese/*.train.jsonl -o corpora/maltese-clean
+    """
+    import glob as globmod
+
+    from .quality import Settings, clean_documents
+
+    cfg = obj.config()
+    if not dry_run and not output_dir:
+        raise click.UsageError("give -o/--output-dir, or --dry-run to only measure")
+    paths = sorted({p for f in files for p in (globmod.glob(f) or [f])})
+    settings = Settings(
+        max_bad=max_bad, boilerplate_docs=boilerplate_docs, min_keep=min_keep, min_chars=cfg.file_min_chars
+    )
+    table = Table(title="Corpus cleaning" + (" (dry run)" if dry_run else ""), header_style="bold")
+    for col, j in (
+        ("file", "left"),
+        ("documents", "right"),
+        ("M chars", "right"),
+        ("kept", "right"),
+        ("garbage lines", "right"),
+        ("boilerplate lines", "right"),
+        ("documents dropped", "right"),
+    ):
+        table.add_column(col, justify=j)
+    examples: list[tuple[str, dict[str, list[str]]]] = []
+    tot_in = tot_out = 0
+    for path in paths:
+        try:
+            rows = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            raise click.ClickException(f"{path}: {exc}") from exc
+        field = cfg.text_field
+        texts = [r[field] for r in rows if isinstance(r.get(field), str)]
+        with console.status(f"Cleaning {Path(path).name} ..."):
+            cleaned, rep = clean_documents(texts, settings, show)
+        tot_in, tot_out = tot_in + rep.chars_in, tot_out + rep.chars_out
+        kept_share = rep.chars_out / rep.chars_in if rep.chars_in else 0
+        table.add_row(
+            Path(path).name,
+            f"{rep.docs_in:,} → {rep.docs_out:,}",
+            f"{rep.chars_in / 1e6:.1f} → {rep.chars_out / 1e6:.1f}",
+            f"{kept_share:.1%}",
+            f"{rep.lines['garbage']:,}",
+            f"{rep.lines['boilerplate']:,}",
+            f"{rep.lines['documents dropped']:,}",
+        )
+        examples.append((Path(path).name, rep.examples))
+        if not dry_run:
+            out = Path(output_dir) / Path(path).name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with out.open("w", encoding="utf-8") as fh:
+                for text in cleaned:
+                    fh.write(json.dumps({field: text}, ensure_ascii=False) + "\n")
+    console.print(table)
+    if tot_in:
+        console.print(f"Total: {tot_in / 1e6:.1f}M → {tot_out / 1e6:.1f}M characters ({tot_out / tot_in:.1%} kept)")
+    for name, ex in examples:
+        for reason, lines in ex.items():
+            if lines:
+                console.print(f"[bold]{name}[/bold] • {reason}:", highlight=False)
+                for line in lines:
+                    console.print(f"   {line}", highlight=False, markup=False)
+    if not dry_run:
+        console.print(f"💾 cleaned files in {output_dir}")
+
+
 @cli.command("pairs")
 @click.argument("files", nargs=-1, required=True)
 @click.option("-o", "--output", required=True, type=click.Path(dir_okay=False), help="Pairs file (JSONL).")
@@ -1395,11 +1485,12 @@ def cloze_score(obj: Ctx, items_file, models, output, show, pmis, batch_size) ->
         ("candidates per item", lambda s: f"{s['candidates']:.1f}"),
         ("chance (top-1)", lambda s: f"{s['chance_top1']:.1%}"),
         ("top-1 accuracy", lambda s: f"{s['top1']:.1%}"),
-        ("top-1, ignoring a ו/ה prefix", lambda s: f"{s['top1_lenient']:.1%}"),
         ("top-3 accuracy", lambda s: f"{s['top3']:.1%}"),
         ("mean rank of the answer", lambda s: f"{s['mean_rank']:.2f}"),
         ("mean reciprocal rank", lambda s: f"{s['mrr']:.3f}"),
     ]
+    if any(summaries[c]["top1_lenient"] != summaries[c]["top1"] for c in columns):  # Hebrew ו/ה variants
+        rows.insert(4, ("top-1, ignoring a ו/ה prefix", lambda s: f"{s['top1_lenient']:.1%}"))
     for name, _, _ in BUCKETS:
         if name in first["by_bucket"]:
             rows.append(

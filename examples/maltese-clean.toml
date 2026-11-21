@@ -1,0 +1,28 @@
+# Maltese, second run: the same corpus after `lfm3-cpt clean` (OCR garbage, boilerplate, ruined documents removed).
+#
+#   lfm3-cpt clean 'corpora/maltese/*.train.jsonl' --dry-run           # measure first, read the examples
+#   lfm3-cpt clean 'corpora/maltese/*.train.jsonl' -o corpora/maltese-clean
+#
+# Only the training files change. The held-out files, the minimal pairs and the gap-filling items are those of
+# the first run (examples/maltese.toml), so both models are compared on exactly the same test.
+target_language = "mt"
+data_dir = "data/maltese-clean"
+output_dir = "runs/lfm3-1.7b-cpt-mt-clean"
+
+[data]
+train_files = ["corpora/maltese-clean/*.train.jsonl", "corpora/en/fineweb-edu.train.jsonl"]
+eval_files = ["corpora/maltese/*.eval.jsonl"]
+ood_files = ["corpora/en/fineweb-edu.eval.jsonl"]
+file_min_chars = 200
+strip_marks = ["typographic_apostrophes"]
+grammar_files = ["corpora/maltese/pairs.jsonl"]
+
+[lora]
+train_embeddings = true
+
+[training]
+num_train_epochs = 1
+learning_rate = 1e-4
+eval_steps = 250
+save_steps = 500
+save_total_limit = 4
