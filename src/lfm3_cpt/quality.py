@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -25,6 +26,22 @@ from .words import is_word
 _PUNCT = "\"'“”‘’«»()[]{}<>.,;:!?…–—-*•·/\\|"
 _NUMBER_RE = re.compile(r"^[\d.,:/%€$£+-]+$")
 _MIXED_CASE_RE = re.compile(r"[^\W\d_]*[a-zà-ÿċġħż][A-ZÀ-ÞĊĠĦŻ]")
+_QUOTES = '"“”„«»'
+_JOINERS = ".…/:;,=+&@_"  # inside a token: an abbreviation (p.m., Ph.D.), URL or joined words, not noise
+
+
+def _script(ch: str) -> str:
+    return unicodedata.name(ch, "").split(" ", 1)[0] if ch.isalpha() else ""
+
+
+def _mojibake(tok: str) -> bool:
+    """Broken encodings: symbols inside words (tieg©u), letters of two scripts in one word (fiΩ-Ωmien), or a
+    combining mark standing alone (tieg ̇u)."""
+    if any(unicodedata.category(c) in {"So", "Sm"} for c in tok):
+        return True
+    if tok and unicodedata.category(tok[0]) == "Mn":
+        return True
+    return len({_script(c) for c in tok} - {""}) > 1
 
 
 def _key(line: str) -> str:
@@ -36,6 +53,8 @@ def _key(line: str) -> str:
 class Settings:
     max_bad: float = 0.3  # drop a line when more than this share of its tokens are not words
     min_tokens: int = 3  # shorter lines are judged only if they have no word at all
+    min_bad: int = 2  # ... and longer ones need at least this many bad tokens: one odd token is no garbage
+    boilerplate: bool = True  # off for literature, where repeated lines can be the text (biblical formulas)
     boilerplate_docs: int = 5  # a line in at least this many documents of a file is boilerplate
     boilerplate_min_chars: int = 15  # shorter repeated lines ("Iva.", "Grazzi.") are ordinary text
     min_keep: float = 0.5  # drop a document that keeps less than this share of its characters
@@ -56,9 +75,13 @@ class Report:
 
 def _token_ok(tok: str, common_short: set[str]) -> bool | None:
     """True = a word, False = noise, None = neutral (a number or punctuation only)."""
-    t = tok.strip(_PUNCT)
+    if _mojibake(tok.strip(_PUNCT)):
+        return False
+    t = "".join(c for c in tok if c not in _QUOTES).strip(_PUNCT)  # Id-"diskors," -> Id-diskors
     if not t or _NUMBER_RE.match(t) or any(c.isdigit() for c in t):
         return None  # numbers, and words with digits (Maltese 11-il, fl-1964) are neither
+    if any(c in _JOINERS for c in t):
+        return None
     if _MIXED_CASE_RE.match(t) and not t[:1].isupper():
         return False  # wAġ, l0ng: case changes inside a word (but McDonald, ĠUSTIZZJA are fine)
     if len(t) <= 2:
@@ -73,7 +96,7 @@ def line_is_garbage(line: str, common_short: set[str], s: Settings) -> bool:
     bad = verdicts.count(False)
     if len(verdicts) < s.min_tokens:
         return bad == len(verdicts)
-    return bad / len(verdicts) > s.max_bad
+    return bad >= s.min_bad and bad / len(verdicts) > s.max_bad
 
 
 def clean_documents(texts: list[str], s: Settings, show: int = 3) -> tuple[list[str], Report]:
@@ -91,7 +114,7 @@ def clean_documents(texts: list[str], s: Settings, show: int = 3) -> tuple[list[
     total = sum(tokens.values()) or 1
     floor = max(s.short_min_count, s.short_min_share * total)
     common_short = {w for w, n in tokens.items() if len(w) <= 2 and w.isalpha() and n >= floor}
-    boiler = {k for k, n in line_docs.items() if n >= s.boilerplate_docs}
+    boiler = {k for k, n in line_docs.items() if n >= s.boilerplate_docs} if s.boilerplate else set()
 
     out: list[str] = []
     for t in texts:

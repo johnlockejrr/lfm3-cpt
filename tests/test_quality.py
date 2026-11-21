@@ -80,3 +80,51 @@ def test_cli_clean(tmp_path: Path):
     assert len(rows) == 40 and all("wAġ" not in r["text"] for r in rows)
     assert PROSE[1] in rows[0]["text"]
     assert runner.invoke(cli, ["clean", str(src)]).exit_code != 0  # neither -o nor --dry-run
+
+
+# Lines from the first dry run on Korpus Malti (November 2026).
+KEEP = [
+    "Għaldaqstant, il‐KA tissuġġerixxi li l‐iżvilupp sostenibbli għandu jiddaħħal fil‐portafoll tal‐prim ministru.",
+    "Għalkemm l‐impenn fuq kull livell huwa importanti, il‐Gvern għandu d‐dmir jagħmel il‐parti tiegħu.",
+    "Fis-2.30 p.m. kontu hawn.",
+    "Fit-3.12 p.m. il-Kumitat aġġorna.",
+    'L-emenda "F" m\'għaddietx.',
+    "L-Onor.Vella.",
+    "Il-warrant…meta tiġi sospiża?",
+    'Id-"diskors," l-"istil," l-"eteroglossija," id-"djaloġiżmu" u l-"polifonija" huma fost il-kunċetti li se nittratta.',
+    "L-Ewwel Konferenza 'Dun Karm' mill- Prof. Ġużċ Aquilina B.A., LL.D., Ph.D.(Lond.), F.R.A.S.",
+    "direttivi EU MCCAA",
+    "Nokia PC Suite",
+]
+DROP = [
+    "Gasju f'wib ioeqa So i ta'-Piletir l Mn 9 ie j har 9 k ) ji ; X i xa aa ik fa, kfal-ilti Misilmin FrRiieb.",
+    "kk ik jk",
+    "k k k",
+    "Fl-istudju tieg ̇u, Debono jag ̇ti l-ismijiet ta' Ωew© persona©©i li kienu ©arrew dawn l-o©©etti sagri.",
+    "Probabbilment m'hix wa ̇da ori©inali u twa ̇ ̇let wara.",
+    "B FN wAġ Għaxar Snin Sezzjoni ia",
+]
+
+
+def test_dry_run_examples():
+    s = Settings()
+    for line in KEEP:
+        assert not line_is_garbage(line, COMMON, s), line
+    for line in DROP:
+        assert line_is_garbage(line, COMMON, s), line
+
+
+def test_typographic_hyphens():
+    from lfm3_cpt.textnorm import Normalizer
+    from lfm3_cpt.words import is_word
+
+    assert Normalizer("NFC", ["typographic_hyphens"])("il‐Kummissjoni l‑ewwel") == "il-Kummissjoni l-ewwel"
+    assert is_word("il‐Kummissjoni") and is_word("għall‑ewwel")
+
+
+def test_no_boilerplate_keeps_repeated_formulas():
+    docs = [f"Dan jgħid il-Mulej tal-eżerċti:\nIl-kapitlu tal-ktieb ta' {w}, b'kull vers tiegħu." for w in WORDS[:8]]
+    _, with_rule = clean_documents(docs, Settings(boilerplate_docs=5, min_chars=10))
+    out, without = clean_documents(docs, Settings(boilerplate_docs=5, min_chars=10, boilerplate=False))
+    assert with_rule.lines["boilerplate"] == 8 and without.lines["boilerplate"] == 0
+    assert all(d.startswith("Dan jgħid il-Mulej") for d in out)

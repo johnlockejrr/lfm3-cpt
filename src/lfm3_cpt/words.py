@@ -12,7 +12,7 @@ import re
 _LETTER = r"[^\W\d_]"
 _MARK = r"[֑-ׇ׳״]"  # Hebrew cantillation, points, geresh, gershayim
 _PIECE = rf"(?:{_LETTER}|{_MARK})+"
-WORD_RE = re.compile(rf"^{_PIECE}(?:['’\-]{_PIECE})*['’]?$")
+WORD_RE = re.compile(rf"^{_PIECE}(?:['’\-\u2010\u2011]{_PIECE})*['’]?$")  # - ‐ ‑ are all hyphens
 ABBREVIATION_MARKS = "׳״"
 
 

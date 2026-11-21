@@ -38,6 +38,8 @@ MARK_SETS: dict[str, frozenset[str]] = {
 # texts type in several ways. Maltese writes `ta'`, `għall-`: a typographic apostrophe would make a second word.
 REPLACEMENT_SETS: dict[str, dict[str, str]] = {
     "typographic_apostrophes": {"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u0060": "'", "\u00b4": "'"},
+    # U+2010 hyphen and U+2011 non-breaking hyphen, as word processors type them: il‐Kummissjoni -> il-Kummissjoni
+    "typographic_hyphens": {"\u2010": "-", "\u2011": "-"},
 }
 
 UNICODE_FORMS = ("NFC", "NFD", "NFKC", "NFKD", "none")

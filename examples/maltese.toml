@@ -18,8 +18,9 @@ eval_files = ["corpora/maltese/*.eval.jsonl"]
 ood_files = ["corpora/en/fineweb-edu.eval.jsonl"]
 file_min_chars = 200
 # Apostrophes and hyphens are part of Maltese spelling (ta', il-kelma, għall-ewwel): typographic apostrophes
-# are unified with ' so that ta’ and ta' are one word; nothing is removed.
-strip_marks = ["typographic_apostrophes"]
+# are unified with ' so that ta’ and ta' are one word, and the typographic hyphen ‐ with -; nothing
+# is removed.
+strip_marks = ["typographic_apostrophes", "typographic_hyphens"]
 grammar_files = ["corpora/maltese/pairs.jsonl"]
 
 [lora]

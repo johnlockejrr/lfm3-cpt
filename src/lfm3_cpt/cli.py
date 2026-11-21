@@ -1109,9 +1109,14 @@ def default_lm_model(cfg: Config) -> str:
 @click.option(
     "--min-keep", type=float, default=0.5, show_default=True, help="Drop a document keeping less than this share."
 )
+@click.option(
+    "--no-boilerplate",
+    is_flag=True,
+    help="Don't remove repeated lines (literature: repeated lines can be the text itself, e.g. biblical formulas).",
+)
 @click.option("--show", type=int, default=3, show_default=True, help="Examples of removed lines per file and reason.")
 @pass_ctx
-def clean_cmd(obj: Ctx, files, output_dir, dry_run, max_bad, boilerplate_docs, min_keep, show) -> None:
+def clean_cmd(obj: Ctx, files, output_dir, dry_run, max_bad, boilerplate_docs, min_keep, no_boilerplate, show) -> None:
     """Remove OCR garbage, boilerplate and ruined documents from JSONL corpora (any language).
 
     Clean training files only: keep the held-out files as they are, so that models trained before and after
@@ -1125,13 +1130,19 @@ def clean_cmd(obj: Ctx, files, output_dir, dry_run, max_bad, boilerplate_docs, m
     import glob as globmod
 
     from .quality import Settings, clean_documents
+    from .textnorm import Normalizer
 
     cfg = obj.config()
+    norm = Normalizer.from_config(cfg)  # clean what the model will see (e.g. ‐ already unified to -)
     if not dry_run and not output_dir:
         raise click.UsageError("give -o/--output-dir, or --dry-run to only measure")
     paths = sorted({p for f in files for p in (globmod.glob(f) or [f])})
     settings = Settings(
-        max_bad=max_bad, boilerplate_docs=boilerplate_docs, min_keep=min_keep, min_chars=cfg.file_min_chars
+        max_bad=max_bad,
+        boilerplate_docs=boilerplate_docs,
+        min_keep=min_keep,
+        min_chars=cfg.file_min_chars,
+        boilerplate=not no_boilerplate,
     )
     table = Table(title="Corpus cleaning" + (" (dry run)" if dry_run else ""), header_style="bold")
     for col, j in (
@@ -1152,7 +1163,7 @@ def clean_cmd(obj: Ctx, files, output_dir, dry_run, max_bad, boilerplate_docs, m
         except (OSError, json.JSONDecodeError) as exc:
             raise click.ClickException(f"{path}: {exc}") from exc
         field = cfg.text_field
-        texts = [r[field] for r in rows if isinstance(r.get(field), str)]
+        texts = [norm(r[field]) for r in rows if isinstance(r.get(field), str)]
         with console.status(f"Cleaning {Path(path).name} ..."):
             cleaned, rep = clean_documents(texts, settings, show)
         tot_in, tot_out = tot_in + rep.chars_in, tot_out + rep.chars_out
