@@ -231,6 +231,85 @@ def script_share(text: str, ranges: tuple[tuple[int, int], ...]) -> float:
     return sum(any(lo <= ord(ch) <= hi for lo, hi in ranges) for ch in letters) / len(letters)
 
 
+# Maltese: its own letters (ċ ġ ħ ż, also in għ and ħ-words) and its most frequent function words.
+_MT_LETTERS = set("ċġħżĊĠĦŻ")
+MT_WORDS = frozenset(
+    [
+        "il",
+        "l",
+        "li",
+        "u",
+        "ta",
+        "tal",
+        "tad",
+        "tat",
+        "tas",
+        "taż",
+        "tan",
+        "tar",
+        "ma",
+        "minn",
+        "fil",
+        "fl",
+        "għal",
+        "għall",
+        "biex",
+        "dan",
+        "din",
+        "dawn",
+        "huwa",
+        "hija",
+        "huma",
+        "kien",
+        "kienet",
+        "jew",
+        "iżda",
+        "wkoll",
+        "anki",
+        "aktar",
+        "meta",
+        "fejn",
+        "kif",
+        "x'inhu",
+        "se",
+        "qed",
+        "qiegħed",
+        "qiegħda",
+        "hemm",
+        "hawn",
+        "bħala",
+        "bejn",
+        "wara",
+        "qabel",
+        "tiegħu",
+        "tagħha",
+        "tagħhom",
+        "lil",
+        "lill",
+        "mill",
+        "sal",
+        "mal",
+        "bil",
+        "kull",
+        "ħafna",
+        "xi",
+        "jkun",
+        "tkun",
+        "jista",
+        "tista",
+    ]
+)
+
+
+def is_maltese(text: str) -> bool:
+    words = [w.strip("'") for w in _WORD.findall(text.lower().replace("-", " "))]
+    if not words:
+        return False
+    mt = sum(w in MT_WORDS for w in words) + sum(ch in _MT_LETTERS for ch in text) / 2
+    en = sum(w in EN_WORDS for w in words)
+    return mt > 0 and mt >= en
+
+
 def in_target_language(text: str, target: str) -> bool | None:
     """Whether `text` is in the target language; None when there is no check for it."""
     if not target:
@@ -241,6 +320,8 @@ def in_target_language(text: str, target: str) -> bool | None:
         words = _WORD.findall(text.lower())
         la, en = sum(w in LA_WORDS for w in words), sum(w in EN_WORDS for w in words)
         return la > 0 and la >= en
+    if target == "mt":
+        return is_maltese(text)
     if target in _SCRIPTS:
         return script_share(text, _SCRIPTS[target]) >= 0.5
     return None

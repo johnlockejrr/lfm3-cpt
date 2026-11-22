@@ -75,3 +75,13 @@ def test_cli_pairs(tmp_path: Path):
     assert len(rows) == 4 and all({"sentence_good", "sentence_bad", "phenomenon"} <= set(r) for r in rows)
     bad = CliRunner().invoke(cli, ["pairs", str(tmp_path / "missing.jsonl"), "-o", str(out)])
     assert bad.exit_code != 0
+
+
+def test_maltese_answer_language():
+    from lfm3_cpt.chat_eval import answer_language, in_target_language
+
+    mt = "AI u ML huma teknoloġiji interrelatati, iżda t-tnejn għandhom differenzi kbar."
+    en = "You get diabetes if your pancreas does not make enough insulin."
+    assert in_target_language(mt, "mt") is True and in_target_language(en, "mt") is False
+    assert answer_language(mt, "mt") == "mt" and answer_language(en, "mt") == "en"
+    assert in_target_language("Mort fil-maħżen.", "mt") is True
