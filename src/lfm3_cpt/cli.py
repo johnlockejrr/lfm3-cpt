@@ -1202,6 +1202,73 @@ def sft_source_parallel(source, prefix, src, tgt, count, split, ds_config, seed)
     _exit_after_streaming(bool(s.dataset))
 
 
+@cli.command("languages")
+@click.argument("runs", nargs=-1, required=True)
+@pass_ctx
+def languages_cmd(obj: Ctx, runs) -> None:
+    """Right answer language per data source, for one or more SFT runs (their generations.jsonl).
+
+    An answer is right when it is in the language of its reference answer, so a translation into English counts
+    as right even when the question was in the target language. Pass run directories (runs/x/sft) or files.
+
+    \b
+    Example:
+      lfm3-cpt -c examples/maltese.toml languages runs/mt-sft/sft runs/mt-sft2/sft
+    """
+    from .chat_eval import answer_language
+
+    cfg = obj.config()
+    target = cfg.target_language
+    if not target:
+        raise click.UsageError("set target_language in the config (e.g. mt, he, tr)")
+    per_run: list[tuple[str, dict[str, list[tuple[str, str | None, str]]]]] = []
+    for run in runs:
+        path = Path(run) / "generations.jsonl" if Path(run).is_dir() else Path(run)
+        if not path.exists():
+            raise click.ClickException(f"{path} not found")
+        rows: dict[str, list[tuple[str, str | None, str]]] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            expected = answer_language(r["reference"], target)
+            before = answer_language(r["before"], target) if r.get("before") is not None else None
+            rows.setdefault(r.get("source", "main"), []).append((expected, before, answer_language(r["after"], target)))
+        per_run.append((run, rows))
+    sources = sorted({s for _, rows in per_run for s in rows})
+    table = Table(title=f"Answers in the reference's language (target: {target})", header_style="bold")
+    table.add_column("source")
+    table.add_column("expected")
+    table.add_column("before")
+    for run, _ in per_run:
+        table.add_column(Path(run).parent.name if Path(run).name == "sft" else run, justify="right")
+    totals = [[0, 0] for _ in per_run]
+    before_total = [0, 0]
+    for src in sources:
+        first = next(rows[src] for _, rows in per_run if src in rows)
+        expected = Counter(e for e, _, _ in first).most_common(1)[0][0]
+        b = [x for x in first if x[1] is not None]
+        b_ok = sum(e == bl for e, bl, _ in b)
+        before_total[0] += b_ok
+        before_total[1] += len(b)
+        cells = []
+        for i, (_, rows) in enumerate(per_run):
+            items = rows.get(src, [])
+            ok = sum(e == a for e, _, a in items)
+            totals[i][0] += ok
+            totals[i][1] += len(items)
+            cells.append(f"{ok} / {len(items)}" if items else "—")
+        table.add_row(Path(src).name, expected, f"{b_ok} / {len(b)}" if b else "—", *cells)
+    table.add_section()
+    table.add_row(
+        "all",
+        "",
+        f"{before_total[0]} / {before_total[1]}" if before_total[1] else "—",
+        *(f"{o} / {n}" for o, n in totals),
+    )
+    console.print(table)
+
+
 @cli.command("clean")
 @click.argument("files", nargs=-1, required=True)
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), help="Write cleaned copies here (same names).")

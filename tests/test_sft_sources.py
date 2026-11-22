@@ -96,3 +96,15 @@ def test_cli_sft_source(tmp_path: Path):
     assert not {json.loads(x)["messages"][1]["content"] for x in fwd} & {
         json.loads(x)["messages"][0]["content"] for x in bwd
     }
+
+
+def test_repair_elision():
+    from lfm3_cpt.sft_sources import repair_elision
+
+    assert repair_elision("sistemi ta 'kontroll") == "sistemi ta' kontroll"
+    assert repair_elision("Dan jista 'jinkludi lezzjonijiet") == "Dan jista' jinkludi lezzjonijiet"
+    assert repair_elision("Tista 'tgħidli? erba 'snin, terġa 'tibda") == "Tista' tgħidli? erba' snin, terġa' tibda"
+    assert repair_elision("u 'Kif inti?' qalli") == "u 'Kif inti?' qalli"  # an opening quote, not an elision
+    assert repair_elision("ta' kontroll") == "ta' kontroll"  # already right
+    rec = {"instruction": "Spjega", "input": "", "output": "Response in Maltese: Dan jista 'jgħin ta 'kuljum."}
+    assert taco_messages(rec)["messages"][1]["content"] == "Dan jista' jgħin ta' kuljum."

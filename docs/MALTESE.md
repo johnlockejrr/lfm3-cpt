@@ -249,6 +249,14 @@ against the language of the *reference* answer ("answers in the reference's lang
 **The cost:** about +8% perplexity in Maltese and English, much more than Hebrew's SFT (+0.25). If that matters,
 a gentler run (`-s sft_learning_rate=5e-5`) should roughly halve it.
 
+`lfm3-cpt languages runs/mt-sft/sft [more runs …]` prints the by-source table above for any SFT runs.
+
+**A data artifact the model copied.** In chat it wrote `jista 'jinkludi` and `ta 'kontroll`: the machine
+translation had detached the apostrophe of Maltese elision in 49% of the TaCo answers (about 13,500 times: `ta '`,
+`jista '`, `tista '`, `ma '`, …). `sft-source taco` now joins them back (`ta' kontroll`) for words ending in -a,
+leaving `u 'Kif…'` (an opening quote) alone. A rare `suġĠerimenti` is something else: `ġ` and `Ġ` differ in one
+UTF-8 byte, and when the model spells `ġ` byte by byte it can pick the wrong one. None of these are in the data.
+
 ```bash
 CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml chat runs/mt-sft/sft/merged --temperature 0
 ```

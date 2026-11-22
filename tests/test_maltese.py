@@ -85,3 +85,27 @@ def test_maltese_answer_language():
     assert in_target_language(mt, "mt") is True and in_target_language(en, "mt") is False
     assert answer_language(mt, "mt") == "mt" and answer_language(en, "mt") == "en"
     assert in_target_language("Mort fil-maħżen.", "mt") is True
+
+
+def test_cli_languages(tmp_path: Path):
+    rows = [
+        {"source": "main", "reference": "Mort fil-maħżen.", "before": "Mort fil-maħżen.", "after": "Mort fil-maħżen."},
+        {
+            "source": "opus.mt2en.jsonl",
+            "reference": "The dog is sleeping on the sofa.",
+            "before": "Il-kelb qed jorqod fuq is-sufan.",
+            "after": "The dog is sleeping on the sofa.",
+        },
+        {
+            "source": "en-gsm8k.clean.jsonl",
+            "reference": "The answer is 19.",
+            "before": "The answer is 19.",
+            "after": "It-tweġiba hija dsatax u l-kalkolu huwa sempliċi.",
+        },
+    ]
+    run = tmp_path / "mt-sft" / "sft"
+    run.mkdir(parents=True)
+    (run / "generations.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    res = CliRunner().invoke(cli, ["-s", "target_language=mt", "languages", str(run)])
+    assert res.exit_code == 0, res.output
+    assert "opus.mt2en.jsonl" in res.output and "2 / 3" in res.output  # main and the translation right, gsm8k not

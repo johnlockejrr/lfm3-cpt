@@ -2,7 +2,7 @@
 
 * `taco_messages`: TaCo-style translated Alpaca (e.g. saillab/alpaca_maltese_taco), where the instruction is in the
   target language but the output is a chain: "Instruction in English: … Response in English: … Response in
-  Maltese: …". Only the last part is the answer.
+  Maltese: …". Only the last part is the answer; for Maltese, detached elision apostrophes are repaired.
 * `parallel_pairs` / `translation_messages`: sentence pairs from a parallel corpus (e.g. MLRS/OPUS-MT-EN-Fixed),
   as translation requests in both directions.
 
@@ -43,10 +43,21 @@ def taco_answer(output: str, language: str = "Maltese") -> str:
     return "" if _PLACEHOLDER_RE.match(answer) else answer
 
 
+# Machine translation detaches the apostrophe of Maltese elision: "ta 'kontroll", "jista 'jinkludi" for
+# "ta' kontroll", "jista' jinkludi". The elided words end in -a (ta', ma', jista', erba', terġa'), so only those
+# are joined back: "u 'Kif'" (and + an opening quote) stays as it is.
+_DETACHED_ELISION_RE = re.compile(r"\b(\w*[aA]) '(?=\w)")
+
+
+def repair_elision(text: str) -> str:
+    return _DETACHED_ELISION_RE.sub(r"\1' ", text)
+
+
 def taco_messages(rec: Mapping[str, Any], language: str = "Maltese") -> dict[str, Any] | None:
-    instruction = _text(rec.get("instruction"))
-    extra = _text(rec.get("input"))
-    answer = taco_answer(_text(rec.get("output")), language)
+    fix = repair_elision if language == "Maltese" else (lambda t: t)
+    instruction = fix(_text(rec.get("instruction")))
+    extra = fix(_text(rec.get("input")))
+    answer = fix(taco_answer(_text(rec.get("output")), language))
     if not instruction or not answer:
         return None
     user = instruction if extra.lower() in _EMPTY else f"{instruction}\n\n{extra}"
