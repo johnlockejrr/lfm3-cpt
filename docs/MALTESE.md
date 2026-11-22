@@ -254,11 +254,32 @@ a gentler run (`-s sft_learning_rate=5e-5`) should roughly halve it.
 **A data artifact the model copied.** In chat it wrote `jista 'jinkludi` and `ta 'kontroll`: the machine
 translation had detached the apostrophe of Maltese elision in 49% of the TaCo answers (about 13,500 times: `ta '`,
 `jista '`, `tista '`, `ma '`, …). `sft-source taco` now joins them back (`ta' kontroll`) for words ending in -a,
-leaving `u 'Kif…'` (an opening quote) alone. A rare `suġĠerimenti` is something else: `ġ` and `Ġ` differ in one
-UTF-8 byte, and when the model spells `ġ` byte by byte it can pick the wrong one. None of these are in the data.
+leaving `u 'Kif…'` (an opening quote) and the article `'il` / `'l` (`mexa 'il quddiem`) alone.
+
+**A tokenizer gap the model trips over.** `suġĠerimenti` is not in the data. LFM3's tokenizer has no token for
+`ġ`: every `ġ` is two raw bytes (`suġġerimenti` → `su Ä ¡ Ä ¡ er imenti`), and capital `Ġ` (`Ä ł`) differs only in
+the second byte, which the model sometimes gets wrong, systematically in `ġġ`. `chat`, `generate` and the SFT
+evaluation now lower a capital that follows a lowercase letter inside a word (never right in Maltese) as the text
+is written. The real fix, for the next CPT run: give the tokenizer tokens for `ġ ċ ż Ġ Ċ Ż`, which would also make
+Maltese shorter in tokens.
+
+**Second run** (repaired data, `-s sft_learning_rate=5e-5`, `-o runs/mt-sft2`):
+
+| | run 1 (1e-4, old data) | **run 2 (5e-5, repaired)** |
+|---|---|---|
+| right language, by source (`lfm3-cpt languages`) | 97 / 100 | 97 / 100 |
+| Maltese → English translated | 9 / 10 | 9 / 10 |
+| answers finished / chrF | 88% / 46.6 | 89% / 45.7 |
+| forgetting: Maltese / English perplexity | +0.45 / +1.35 | **+0.39 / +1.06** |
+
+The lower learning rate cut forgetting by about a fifth, not half: most of the cost comes from the translated
+data, not the rate. Run 2 is the chat model: the same behaviour, less forgetting, correct apostrophes. In chat,
+answers to an English question in a fresh conversation come back in English; late in a long Maltese
+conversation the model drifts towards Maltese (and translation requests deep in a conversation can fail): `/reset`
+between topics.
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml chat runs/mt-sft/sft/merged --temperature 0
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml chat runs/mt-sft2/sft/merged --temperature 0
 ```
 
 Expect translationese (the Maltese training answers are machine-translated) and invented details.

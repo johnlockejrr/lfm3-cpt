@@ -421,6 +421,7 @@ def generate(
                 **sampling,
             )
         completion = tokenizer.decode(out[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True)
+        completion = output_repair(cfg.target_language)(completion)
         console.rule()
         sep = "\n" if chat else ""
         console.print(f"[bold cyan]{prompt}[/]{sep}{completion}", markup=True, highlight=False)
@@ -1851,6 +1852,13 @@ def restore(
         console.print(f"📝 {output}")
 
 
+def output_repair(target: str | None):
+    """Repair of generated text for the target language (e.g. Maltese ġ/Ġ byte slips); imported lazily."""
+    from .chatui import output_repair as _repair
+
+    return _repair(target)
+
+
 def _free_memory() -> None:
     import gc
 
@@ -2023,6 +2031,7 @@ def chat(
         show_thinking=thinking,
         write=lambda t: click.echo(t, nl=False),
         on_thinking=lambda: click.echo(click.style("(thinking…) ", dim=True), nl=False),
+        repair=output_repair(cfg.target_language),
     )
     while True:
         try:
@@ -2056,7 +2065,9 @@ def chat(
                 streamer=streamer,
                 **sampling,
             )
-        answer = tokenizer.decode(out[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True)
+        answer = output_repair(cfg.target_language)(
+            tokenizer.decode(out[0, inputs["input_ids"].shape[1] :], skip_special_tokens=True)
+        )
         history.append({"role": "assistant", "content": final_answer(answer)})
 
 

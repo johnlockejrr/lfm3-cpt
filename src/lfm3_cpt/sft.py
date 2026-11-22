@@ -32,6 +32,7 @@ from trl import SFTConfig, SFTTrainer
 
 from .callbacks import JsonlMetricsLogger, TrainingDashboard, make_progress
 from .chat_eval import answer_perplexity, generate_answers, summarize_generations
+from .chatui import output_repair
 from .config import Config
 from .data import is_prepared, load_data
 from .device import DeviceInfo, configure_backend, detect, peak_memory_gb, resolve_precision, torch_dtype
@@ -168,6 +169,7 @@ def evaluate_chat(
                 cfg.sft_repetition_penalty,
                 lambda n: progress.advance(task, n),
                 cfg.sft_no_repeat_ngram,
+                repair=output_repair(cfg.target_language),
             )
             out["generation"] = summarize_generations(
                 answers,

@@ -11,6 +11,7 @@ streaming and what is kept as the assistant's turn in the conversation history:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from transformers import TextStreamer
@@ -50,6 +51,24 @@ def final_answer(full: str) -> str:
     return "" if stripped.startswith(OPEN) else stripped  # unterminated reasoning: no answer
 
 
+# LFM3's tokenizer has no token for ġ ċ ż: each is written as two raw UTF-8 bytes, and ġ (C4 A1) and Ġ (C4 A0)
+# differ only in the second one, so the model sometimes writes "suġĠerimenti". In Maltese a capital never follows
+# a lowercase letter inside a word, so such a capital is lowered as the text is written.
+_MT_INNER_CAPITAL_RE = re.compile(r"(?<=[a-zàèìòùċġħż])([ĊĠĦŻ])")
+
+
+def repair_maltese(text: str) -> str:
+    return _MT_INNER_CAPITAL_RE.sub(lambda m: m.group(1).lower(), text)
+
+
+OUTPUT_REPAIRS: dict[str, Callable[[str], str]] = {"mt": repair_maltese}
+
+
+def output_repair(target: str | None) -> Callable[[str], str]:
+    """The repair for generated text in `target` (identity when there is none)."""
+    return OUTPUT_REPAIRS.get(target or "", lambda s: s)
+
+
 class AnswerStreamer(TextStreamer):
     """A TextStreamer that applies `visible_text` incrementally."""
 
@@ -59,8 +78,10 @@ class AnswerStreamer(TextStreamer):
         show_thinking: bool = False,
         write: Callable[[str], None] | None = None,
         on_thinking: Callable[[], None] | None = None,
+        repair: Callable[[str], str] | None = None,
     ):
         super().__init__(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        self.repair = repair or (lambda s: s)
         self.show_thinking = show_thinking
         self.write = write or (lambda s: print(s, end="", flush=True))
         self.on_thinking = on_thinking
@@ -79,7 +100,7 @@ class AnswerStreamer(TextStreamer):
         ):
             self.on_thinking()
             self.thinking_announced = True
-        visible = visible_text(self.full, self.show_thinking, final=stream_end)
+        visible = visible_text(self.repair(self.full), self.show_thinking, final=stream_end)
         if visible.startswith(self.printed):
             new = visible[len(self.printed) :]
             if new:

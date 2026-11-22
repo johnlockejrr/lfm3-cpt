@@ -466,6 +466,7 @@ def generate_answers(
     repetition_penalty: float = 1.1,
     progress: ProgressFn | None = None,
     no_repeat_ngram: int = 0,
+    repair: Callable[[str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """Greedy answers. Prompts are left-padded by hand, so the shared tokenizer's settings are never changed."""
     encoded = [chat_ids(tokenizer, list(p), add_generation_prompt=True, **kwargs) for p in prompts]
@@ -498,6 +499,8 @@ def generate_answers(
                 if finished:
                     new = new[: next(k for k, t in enumerate(new) if t in eos)]
                 text = final_answer(tokenizer.decode(new, skip_special_tokens=True))  # drop any reasoning
+                if repair:
+                    text = repair(text)
                 results[i] = {"text": text, "finished": finished, "tokens": len(new)}
             if progress:
                 progress(len(idx))

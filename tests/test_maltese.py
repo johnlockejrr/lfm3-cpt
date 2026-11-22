@@ -109,3 +109,23 @@ def test_cli_languages(tmp_path: Path):
     res = CliRunner().invoke(cli, ["-s", "target_language=mt", "languages", str(run)])
     assert res.exit_code == 0, res.output
     assert "opus.mt2en.jsonl" in res.output and "2 / 3" in res.output  # main and the translation right, gsm8k not
+
+
+def test_repair_maltese_byte_slips():
+    from lfm3_cpt.chatui import AnswerStreamer, output_repair, repair_maltese
+
+    assert repair_maltese("Hawn huma tliet suġĠerimenti għal oġĠett") == "Hawn huma tliet suġġerimenti għal oġġett"
+    assert repair_maltese("Ġunju, Ċirkewwa u Żebbuġ") == "Ġunju, Ċirkewwa u Żebbuġ"  # word-initial capitals stay
+    assert repair_maltese("IL-ĠUSTIZZJA") == "IL-ĠUSTIZZJA"  # all caps stays
+    assert output_repair("he")("suġĠ") == "suġĠ" and output_repair("mt")("suġĠ") == "suġġ"
+
+    class Tok:  # TextStreamer only needs decode
+        def decode(self, *a, **k):
+            return ""
+
+    out: list[str] = []
+    s = AnswerStreamer(Tok(), write=out.append, repair=repair_maltese)
+    for piece in ["Hawn huma tliet su", "ġ", "Ġ", "erimenti."]:
+        s.on_finalized_text(piece)
+    s.on_finalized_text("", stream_end=True)
+    assert "".join(out).strip() == "Hawn huma tliet suġġerimenti."
