@@ -1096,6 +1096,112 @@ def default_lm_model(cfg: Config) -> str:
     return cfg.model_id
 
 
+@cli.group("sft-source")
+def sft_source() -> None:
+    """Turn raw instruction or parallel datasets into clean chat examples (JSONL) for sft_dataset / sft_mix.
+
+    \b
+    Examples:
+      lfm3-cpt sft-source taco saillab/alpaca_maltese_taco -o corpora/sft/mt-alpaca.jsonl
+      lfm3-cpt sft-source parallel MLRS/OPUS-MT-EN-Fixed --src en --tgt mt -n 1500 -o corpora/sft/opus
+    """
+
+
+def _sft_source(dataset_or_file: str, split: str, config: str | None):
+    from .hub_export import Source
+
+    if Path(dataset_or_file).exists() or any(ch in dataset_or_file for ch in "*?"):
+        return Source(data_files=[dataset_or_file])
+    return Source(dataset_or_file, config, split)
+
+
+def _write_messages(rows: list[dict], path: str) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+@sft_source.command("taco")
+@click.argument("source")
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False))
+@click.option("--language", default="Maltese", show_default=True, help="Keep the answer after 'Response in LANGUAGE:'.")
+@click.option("--split", default="train", show_default=True)
+@click.option("--config", "ds_config", help="Dataset configuration.")
+@click.option("--max", "max_rows", type=int, default=0, help="Stop after this many good examples (0 = all).")
+def sft_source_taco(source, output, language, split, ds_config, max_rows) -> None:
+    """Translated Alpaca in TaCo format: the target-language instruction and only the target-language answer."""
+    from .hub_export import stream_records
+    from .sft_sources import taco_messages
+
+    src = _sft_source(source, split, ds_config)
+    rows: list[dict] = []
+    read = 0
+    with console.status(f"Reading {src.describe()} ...") as status:
+        try:
+            for rec in stream_records(src):
+                read += 1
+                m = taco_messages(rec, language)
+                if m:
+                    rows.append(m)
+                if read % 2000 == 0:
+                    status.update(f"Reading {src.describe()}: {read:,} records, {len(rows):,} kept ...")
+                if max_rows and len(rows) >= max_rows:
+                    break
+        except Exception as exc:
+            raise click.ClickException(f"cannot read {source}: {exc}") from exc
+    if not rows:
+        raise click.ClickException(f"no usable examples in {read:,} records: check --language and the fields")
+    _write_messages(rows, output)
+    ex = rows[0]["messages"]
+    console.print(
+        f"💬 {len(rows):,} examples from {read:,} records ({read - len(rows):,} without a {language} answer) → {output}",
+        highlight=False,
+    )
+    console.print(
+        f"   user: {ex[0]['content'][:200]}\n   assistant: {ex[1]['content'][:300]}", highlight=False, markup=False
+    )
+    _exit_after_streaming(bool(src.dataset))
+
+
+@sft_source.command("parallel")
+@click.argument("source")
+@click.option("-o", "--output", "prefix", required=True, help="Writes PREFIX.SRC2TGT.jsonl and PREFIX.TGT2SRC.jsonl.")
+@click.option("--src", default="en", show_default=True)
+@click.option("--tgt", default="mt", show_default=True)
+@click.option("-n", "--count", type=int, default=1500, show_default=True, help="Examples per direction.")
+@click.option("--split", default="train", show_default=True)
+@click.option("--config", "ds_config", help="Dataset configuration.")
+@click.option("--seed", type=int, default=7, show_default=True)
+def sft_source_parallel(source, prefix, src, tgt, count, split, ds_config, seed) -> None:
+    """Translation requests in both directions from a parallel corpus (different sentences for each direction)."""
+    from .hub_export import stream_records
+    from .sft_sources import parallel_pairs, translation_messages
+
+    s = _sft_source(source, split, ds_config)
+    with console.status(f"Reading {s.describe()} ..."):
+        try:
+            pairs = parallel_pairs(stream_records(s, shuffle_buffer=20_000, seed=seed), src, tgt, 2 * count, seed)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except Exception as exc:
+            raise click.ClickException(f"cannot read {source}: {exc}") from exc
+    if len(pairs) < 2:
+        raise click.ClickException("too few usable pairs")
+    half = len(pairs) // 2
+    forward = translation_messages(pairs[:half], src, tgt)
+    backward = translation_messages([(b, a) for a, b in pairs[half:]], tgt, src)
+    for rows, (a, b) in ((forward, (src, tgt)), (backward, (tgt, src))):
+        path = f"{prefix}.{a}2{b}.jsonl"
+        _write_messages(rows, path)
+        ex = rows[0]["messages"]
+        console.print(f"🔁 {len(rows):,} {a}→{b} examples → {path}", highlight=False)
+        console.print(
+            f"   user: {ex[0]['content'][:200]}\n   assistant: {ex[1]['content'][:200]}", highlight=False, markup=False
+        )
+    _exit_after_streaming(bool(s.dataset))
+
+
 @cli.command("clean")
 @click.argument("files", nargs=-1, required=True)
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), help="Write cleaned copies here (same names).")

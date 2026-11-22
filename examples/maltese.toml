@@ -34,3 +34,20 @@ learning_rate = 1e-4
 eval_steps = 250
 save_steps = 500
 save_total_limit = 4
+
+[sft]
+# Stage 2 (chat), as in the final Hebrew recipe (HEBREW.md § 4), built with `lfm3-cpt sft-source`:
+#   corpora/sft/mt-alpaca.jsonl       Alpaca with Maltese instructions and only the Maltese answer (saillab TaCo)
+#   corpora/sft/opus.{en2mt,mt2en}    real English-Maltese sentence pairs (MLRS/OPUS-MT-EN-Fixed)
+#   corpora/sft/en-*.clean.jsonl      English answers from the Hebrew recipe: keep English questions in English
+# About 20% English answers in total, the balance that worked best for Hebrew.
+sft_dataset = "corpora/sft/mt-alpaca.jsonl"
+sft_filter_column = ""
+sft_eval_split = ""
+sft_eval_holdout = 0.03
+sft_mix = [
+    "corpora/sft/en-no-robots.clean.jsonl@0.12",
+    "corpora/sft/en-gsm8k.clean.jsonl@0.05",
+    "corpora/sft/opus.mt2en.jsonl@0.04",
+    "corpora/sft/opus.en2mt.jsonl@0.05",
+]

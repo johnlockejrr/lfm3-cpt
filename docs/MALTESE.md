@@ -171,12 +171,16 @@ is the next check worth having.
    apostrophes and hyphens. Word rules that keep them made pairs and gap filling work unchanged.
 3. **Build your own tests when there are none.** No MultiBLiMP for Maltese: pairs and gap-filling items made from
    held-out text worked as well as for Hebrew, and gap filling kept discriminating when the pairs saturated.
-4. **A low-resource language is not a lost cause for a small model.** From chance to 61% on gap filling and
+4. **Clean only what is dirty.** `lfm3-cpt clean` removed 3% of Korpus Malti (boilerplate, OCR garbage,
+   mojibake) after two dry runs to tune it; a second night of training on the result changed nothing measurable
+   (gap filling 60.8% → 58.5% at α=0.5, 54.8% → 56.0% raw: both within noise; English identical). Korpus Malti
+   is already curated: the dry run's 97% kept was the answer. Keep the filter for web crawls and OCR.
+5. **A low-resource language is not a lost cause for a small model.** From chance to 61% on gap filling and
    perplexity 134 → 5.6 in one night, with English intact.
 
 ## 7. Next steps
 
-1. **Cleaner data:** `lfm3-cpt clean` removes OCR garbage (umlib_oar), boilerplate (parliament) and documents
+1. **Cleaner data** *(done: no measurable gain, § 6)*: `lfm3-cpt clean` removes OCR garbage (umlib_oar), boilerplate (parliament) and documents
    that lose most of their text, in the training files only; `examples/maltese-clean.toml` trains on the result and
    is scored on the same held-out text, pairs and gap-filling items:
 
@@ -188,5 +192,18 @@ is the next check worth having.
    CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml cloze score corpora/maltese/cloze.jsonl \
        -m runs/lfm3-1.7b-cpt-mt/merged -m runs/lfm3-1.7b-cpt-mt-clean/merged --pmi 0.5
    ```
-2. **Chat (stage 2):** Maltese–English translation pairs plus English answers, as in HEBREW.md § 4.
+2. **Chat (stage 2)** *(prepared, not yet run)*: the recipe of HEBREW.md § 4 with Maltese sources. Human-written
+   Maltese instructions don't exist openly (Aya has Maltese only in its templated, machine-translated
+   collection), so: Alpaca with Maltese instructions and answers (saillab's TaCo translation, answers cut out
+   of its "Response in Maltese:" chain), real English–Maltese sentence pairs from MLRS/OPUS-MT-EN-Fixed in both
+   directions, and the English answers of the Hebrew recipe, about 20% English in total (`[sft]` in
+   `examples/maltese.toml`):
+
+   ```bash
+   lfm3-cpt sft-source taco saillab/alpaca_maltese_taco -o corpora/sft/mt-alpaca.jsonl --max 10000
+   lfm3-cpt sft-source parallel MLRS/OPUS-MT-EN-Fixed --src en --tgt mt -n 1500 -o corpora/sft/opus
+   lfm3-cpt -p rtx3090 -c examples/maltese.toml prepare --sft
+   CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/maltese.toml sft \
+       --from runs/lfm3-1.7b-cpt-mt/merged -o runs/mt-sft --merge
+   ```
 3. **MELABench:** the University of Malta's benchmark of 11 Maltese tasks, to compare with published models.
