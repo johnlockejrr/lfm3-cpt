@@ -16,6 +16,10 @@ at chance. One night of continued pre-training on 202M characters of curated Mal
 
 8 h 21 min, 90.7M tokens, one RTX 3090, peak 9 GB of GPU memory. English got *better*, not worse.
 
+On the published Maltese benchmark (MELABench, § 9), the chat model built on it reaches 44.7 on Belebele reading
+comprehension (original 25.7, chance 25; Gemma 2 2B 47.6) and 38.8 chrF on Flores-200 English → Maltese
+(original 15.1; Salamandra 2B 34.1, EuroLLM 1.7B 51.1).
+
 - [1. The data](#1-the-data)
 - [2. Tokenizer and baseline](#2-tokenizer-and-baseline)
 - [3. Export](#3-export)
@@ -24,6 +28,7 @@ at chance. One night of continued pre-training on 202M characters of curated Mal
 - [6. Lessons learned](#6-lessons-learned)
 - [7. Next steps](#7-next-steps)
 - [8. Stage 2: chat](#8-stage-2-chat)
+- [9. MELABench](#9-melabench)
 
 ---
 
@@ -194,7 +199,8 @@ is the next check worth having.
        -m runs/lfm3-1.7b-cpt-mt/merged -m runs/lfm3-1.7b-cpt-mt-clean/merged --pmi 0.5
    ```
 2. **Chat (stage 2)** *(done, § 8)*.
-3. **MELABench:** the University of Malta's benchmark of 11 Maltese tasks, to compare with published models.
+3. **MELABench** *(done for 6 of 11 tasks, § 9)*.
+4. **Tokens for `ġ ċ ż`** before the next CPT run (§ 8).
 
 ## 8. Stage 2: chat
 
@@ -283,3 +289,92 @@ CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml chat runs/mt-sft2/sft/m
 ```
 
 Expect translationese (the Maltese training answers are machine-translated) and invented details.
+
+## 9. MELABench
+
+[MELABench](https://github.com/MLRS/MELABench) is the University of Malta's benchmark for Maltese, with published
+scores for many models. It runs on the authors' fork of the LM Evaluation Harness, with fixed prompts (English
+instructions, Maltese content, no chat template), zero-shot. Six of its 11 tasks load directly from the Hub; the
+others need data from the authors or from GitHub.
+
+### Setup
+
+A separate environment: several tasks load their data with dataset scripts, which `datasets` 4 refuses, and
+lfm3-cpt needs `datasets` 5.
+
+```bash
+cd /opt/halogen
+git clone https://github.com/MLRS/MELABench
+git clone https://github.com/KurtMica/lm-evaluation-harness melabench-harness
+uv venv melabench-env --python 3.12
+source melabench-env/bin/activate
+uv pip install -e ./melabench-harness "datasets<4" "transformers>=5.20" accelerate sacrebleu torch
+# the fork (v0.4.8) refers to a class transformers 5 removed
+sed -i 's/    AUTO_MODEL_CLASS = transformers.AutoModelForVision2Seq/    AUTO_MODEL_CLASS = getattr(transformers, "AutoModelForVision2Seq", None) or transformers.AutoModelForImageTextToText/' \
+    melabench-harness/lm_eval/models/hf_vlms.py
+```
+
+Two runs per model: the scoring tasks with automatic batch size (their longest prompts need batch 2 on 24 GB; a
+fixed 8 runs out of memory), the generation tasks with batch 8. **No `--trust_remote_code`** (see below); the task
+files pass it to the dataset loading themselves.
+
+```bash
+cd /opt/halogen/MELABench/prompting
+R=/opt/halogen/lfm3-cpt/runs
+for pair in lfm3:LiquidAI/LFM3-1.7B cpt-mt:$R/lfm3-1.7b-cpt-mt/merged sft-mt:$R/mt-sft2/sft/merged; do
+  name=${pair%%:*}; model=${pair#*:}
+  CUDA_VISIBLE_DEVICES=1 lm-eval --model hf --model_args pretrained=$model,dtype=bfloat16 \
+      --tasks belebele_mlt,sib200_mlt,maltese_news_categories \
+      --include_path tasks/1.0_english --num_fewshot 0 \
+      --batch_size auto:4 --max_batch_size 64 --device cuda --output_path results-native/$name
+  CUDA_VISIBLE_DEVICES=1 lm-eval --model hf --model_args pretrained=$model,dtype=bfloat16 \
+      --tasks flores200_eng-mlt,opus100_eng-mlt,maltese_news_headlines \
+      --include_path tasks/1.0_english --num_fewshot 0 \
+      --batch_size 8 --device cuda --output_path results-native/$name
+done
+```
+
+### Results
+
+All on a 0–100 scale; published scores are the best models under 3B parameters in the MELABench paper, same
+prompts and settings.
+
+| task | metric | LFM3 | + Maltese CPT | **+ chat SFT** | published, under 3B |
+|---|---|---|---|---|---|
+| Belebele (reading comprehension, 4 options) | accuracy | 25.7 | 41.3 | **44.7** | Gemma 2 2B 47.6, EuroLLM 1.7B 24.1 |
+| SIB-200 (topic, 7 classes) | macro F1 | 13.6 | **18.7** | 17.9 | mT0 1.2B 45.8, Gemma 2 2B 39.4, EuroLLM 14.0 |
+| News Categories (multi-label) | macro F1 | 6.0 | 6.2 | **8.1** | EuroLLM 26.3, Gemma 2 2B 15.8 |
+| Flores-200 English → Maltese | chrF | 15.1 | 11.1 | **38.8** | EuroLLM 51.1, Salamandra 2B 34.1 |
+| OPUS-100 English → Maltese | chrF | 13.3 | 1.5 | **23.7** ¹ | EuroLLM 37.0, Salamandra 2B 23.4 |
+| News Headlines (summarization) | Rouge-L | **6.0** | 0.0 | 0.4 | EuroLLM 9.4, mT0 1.2B 6.9 |
+
+¹ The chat model trained on 1,500 sentences of the *training* split of this dataset (`MLRS/OPUS-MT-EN-Fixed`), so
+it has a home advantage here; Flores-200 is the fair translation test.
+
+What it shows:
+
+- **Reading comprehension is the clearest gain:** from chance (25.7) to 44.7, close to Gemma 2 2B and far above
+  EuroLLM 1.7B, a model trained with Maltese from the start. Most of it comes from continued pre-training.
+- **Translation needs the chat stage.** The CPT model is a better Maltese model but a worse translator *under
+  this prompt*: after "…Here is a translation to Maltese:" it usually writes a blank line, which ends the answer
+  empty (4 of 5 Flores sentences in a check with `--log_samples`). It lost the original's habit of following
+  the prompt format; SFT restores it, and the chat model reaches 38.8 chrF, above Salamandra 2B, below EuroLLM.
+- **Classification with English labels stays weak.** SIB-200 and News Categories rank English topic names
+  against a Maltese text; CPT and SFT barely move them.
+- **Headlines failed for both trained models** (6.0 → 0.0 / 0.4). The task stops at the first line break;
+  most likely the same blank-line start as in translation, not checked yet.
+
+### Lessons
+
+1. **`--trust_remote_code` broke generation silently.** In this harness the flag also applies to the model.
+   LFM3's config points to LiquidAI's own modeling code, whose generation fails under `transformers` 5.24 while a
+   single forward pass still works. Symptom: scoring tasks normal, every generation task near zero (chrF 0.1 for
+   the chat model on Flores); without the flag, 38.8. lfm3-cpt also defaults to `trust_remote_code = true`; it
+   works with the `transformers` version installed for training, but after an upgrade, check that `chat` still
+   answers.
+2. **Look at the raw outputs before trusting a zero.** Five items with `--log_samples` (two minutes) separated a
+   harness problem (empty answers from a model that translates in chat) from a real weakness (the CPT model's
+   blank line), after six hours of full runs.
+3. **Size the batch per task type.** Scoring long prompts computes probabilities over the whole vocabulary at
+   every position; automatic batch size handles it. Generation is one token per step; a fixed batch of 8 is far
+   faster than the harness's automatic choice (which picked 1, sized on the longest article).
