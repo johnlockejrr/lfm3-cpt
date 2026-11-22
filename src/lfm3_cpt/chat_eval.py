@@ -510,22 +510,24 @@ def summarize_generations(
     target: str = "tr",
     prompts: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Generation metrics. With `prompts`, the target-language rate counts only questions asked in the target
-    language, and `language_match` is the share of answers in the same language as their question (target or
-    English), which catches a model that answers English questions in the new language."""
+    """Generation metrics. The language an answer *should* have is that of its reference answer, not of the
+    question: "Ittraduċi għall-Ingliż: …" is a Maltese question whose right answer is English. So
+    `target_rate` is the share of answers in the target language among those whose reference is in it, and
+    `language_match` the share of answers in the same language as their reference (target or English), which
+    catches both a model that answers English questions in the new language and one that ignores translation
+    requests. `prompts` only adds their languages to the output, for inspection."""
     n = len(answers)
     langs = [answer_language(a["text"], target) for a in answers]
     out: dict[str, Any] = {"n": n, "target_language": target}
     if target:
+        expected = [answer_language(r, target) for r in references]
+        in_target = [a for a, e in zip(langs, expected, strict=True) if e == target]
+        out["target_rate"] = in_target.count(target) / len(in_target) if in_target else float("nan")
+        scored = [(a, e) for a, e in zip(langs, expected, strict=True) if e in {target, "en"}]
+        out["language_match"] = sum(a == e for a, e in scored) / len(scored) if scored else float("nan")
+        out["expected_languages"] = expected
         if prompts is not None:
-            plangs = [answer_language(p, target) for p in prompts]
-            in_target = [a for a, p in zip(langs, plangs, strict=True) if p == target]
-            out["target_rate"] = in_target.count(target) / len(in_target) if in_target else float("nan")
-            scored = [(a, p) for a, p in zip(langs, plangs, strict=True) if p in {target, "en"}]
-            out["language_match"] = sum(a == p for a, p in scored) / len(scored) if scored else float("nan")
-            out["prompt_languages"] = plangs
-        else:
-            out["target_rate"] = langs.count(target) / n if n else float("nan")
+            out["prompt_languages"] = [answer_language(q, target) for q in prompts]
     if target == "tr":
         out["turkish_rate"] = out["target_rate"]  # name used by earlier versions
     return {

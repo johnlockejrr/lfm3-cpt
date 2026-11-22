@@ -101,13 +101,34 @@ def test_holdout_leftovers_stay_in_training(tiny_config, tokenizer, fake_sft_loa
 def test_language_match_metric():
     answers = [
         {"text": t, "finished": True}
-        for t in ["בירת צרפת היא פריז.", "קנברה היא הבירה.", "The capital is Canberra and it is in the south.", "19"]
+        for t in [
+            "בירת צרפת היא פריז.",
+            "קנברה היא הבירה.",
+            "The capital is Canberra and it is in the south.",
+            "19",
+            "The dog is sleeping on the sofa.",
+        ]
     ]
-    prompts = ["מהי בירת צרפת?", "What is the capital of Australia?", "What is the capital of Australia?", "12+7?"]
-    s = summarize_generations(answers, ["x"] * 4, "he", prompts=prompts)
-    assert s["target_rate"] == 1.0  # the only Hebrew question got a Hebrew answer
-    assert s["language_match"] == pytest.approx(2 / 3)  # the English question answered in Hebrew is a miss
-    assert s["prompt_languages"] == ["he", "en", "en", "empty"]
+    prompts = [
+        "מהי בירת צרפת?",
+        "What is the capital of Australia?",
+        "What is the capital of Australia?",
+        "12+7?",
+        "תרגם לאנגלית: הכלב ישן על הספה.",  # a Hebrew question whose right answer is English
+    ]
+    refs = [
+        "פריז היא בירת צרפת.",
+        "The capital is Canberra.",
+        "The capital is Canberra.",
+        "19",
+        "The dog sleeps on the sofa.",
+    ]
+    s = summarize_generations(answers, refs, "he", prompts=prompts)
+    assert s["target_rate"] == 1.0  # the only Hebrew reference got a Hebrew answer
+    # judged by the reference: the English question answered in Hebrew is a miss, the translation is a hit
+    assert s["language_match"] == pytest.approx(3 / 4)
+    assert s["expected_languages"] == ["he", "en", "en", "empty", "en"]
+    assert s["prompt_languages"] == ["he", "en", "en", "empty", "he"]
 
 
 # --- distill ----------------------------------------------------------------------------------------------------
@@ -269,4 +290,4 @@ def test_sft_with_mix_end_to_end(tiny_config, fake_loaders, fake_sft_loader, eng
     rows = [json.loads(x) for x in (tmp_path / "run" / "sft" / "generations.jsonl").read_text().splitlines()]
     assert {r["source"] for r in rows} == {"main", str(english_mix)}
     log = (tmp_path / "log.txt").read_text()
-    assert f"+ {english_mix}" in log and "question's language" in log
+    assert f"+ {english_mix}" in log and "reference's language" in log

@@ -88,7 +88,7 @@ def test_summarize_generations_and_table():
         {"text": "This is a city.", "finished": False},
         {"text": "", "finished": True},
     ]
-    s = summarize_generations(answers, ["Bu güzel bir şehir.", "Bu bir şehir.", "Evet."])
+    s = summarize_generations(answers, ["Bu güzel bir şehir.", "Bu bir şehir.", "Evet, bu bir şehir."])
     assert s["turkish_rate"] == pytest.approx(1 / 3)
     assert s["english_rate"] == pytest.approx(1 / 3)
     assert s["empty_rate"] == pytest.approx(1 / 3)

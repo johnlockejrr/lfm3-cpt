@@ -23,6 +23,7 @@ at chance. One night of continued pre-training on 202M characters of curated Mal
 - [5. Results](#5-results)
 - [6. Lessons learned](#6-lessons-learned)
 - [7. Next steps](#7-next-steps)
+- [8. Stage 2: chat](#8-stage-2-chat)
 
 ---
 
@@ -192,18 +193,64 @@ is the next check worth having.
    CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml cloze score corpora/maltese/cloze.jsonl \
        -m runs/lfm3-1.7b-cpt-mt/merged -m runs/lfm3-1.7b-cpt-mt-clean/merged --pmi 0.5
    ```
-2. **Chat (stage 2)** *(prepared, not yet run)*: the recipe of HEBREW.md § 4 with Maltese sources. Human-written
-   Maltese instructions don't exist openly (Aya has Maltese only in its templated, machine-translated
-   collection), so: Alpaca with Maltese instructions and answers (saillab's TaCo translation, answers cut out
-   of its "Response in Maltese:" chain), real English–Maltese sentence pairs from MLRS/OPUS-MT-EN-Fixed in both
-   directions, and the English answers of the Hebrew recipe, about 20% English in total (`[sft]` in
-   `examples/maltese.toml`):
-
-   ```bash
-   lfm3-cpt sft-source taco saillab/alpaca_maltese_taco -o corpora/sft/mt-alpaca.jsonl --max 10000
-   lfm3-cpt sft-source parallel MLRS/OPUS-MT-EN-Fixed --src en --tgt mt -n 1500 -o corpora/sft/opus
-   lfm3-cpt -p rtx3090 -c examples/maltese.toml prepare --sft
-   CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/maltese.toml sft \
-       --from runs/lfm3-1.7b-cpt-mt/merged -o runs/mt-sft --merge
-   ```
+2. **Chat (stage 2)** *(done, § 8)*.
 3. **MELABench:** the University of Malta's benchmark of 11 Maltese tasks, to compare with published models.
+
+## 8. Stage 2: chat
+
+Human-written Maltese instructions don't exist openly (Aya has Maltese only in its templated, machine-translated
+collection). The mix, as in the final Hebrew recipe (HEBREW.md § 4), from three sources converted with
+`lfm3-cpt sft-source`:
+
+```bash
+# Alpaca with Maltese instructions; only the part of each answer after "Response in Maltese:" is kept
+lfm3-cpt sft-source taco saillab/alpaca_maltese_taco -o corpora/sft/mt-alpaca.jsonl --max 10000
+# real English-Maltese sentence pairs, different sentences for each direction
+lfm3-cpt sft-source parallel MLRS/OPUS-MT-EN-Fixed --src en --tgt mt -n 1500 -o corpora/sft/opus
+lfm3-cpt -p rtx3090 -c examples/maltese.toml prepare --sft
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -p rtx3090 -c examples/maltese.toml sft \
+    --from runs/lfm3-1.7b-cpt-mt/merged -o runs/mt-sft --merge
+```
+
+- 10,000 TaCo answers kept of 11,912 records (1,912 had only a placeholder); 96.5% of the kept answers are
+  Maltese (the rest: code, short answers, 31 in English).
+- 13,243 training conversations, about 21% with English answers (`[sft]` in `examples/maltese.toml`: No Robots
+  12%, GSM8K 5%, Maltese→English 4%, English→Maltese 5%). 828 steps, 28 minutes, peak 10.5 GB.
+
+Results (100 held-out answers, before → after SFT):
+
+| | before | after |
+|---|---|---|
+| answers that finish on their own | 60% | **88%** |
+| closeness to the reference answer (chrF) | 24.9 | **46.6** |
+| answer perplexity | 3.48 | **2.66** |
+| right language (judged by source, below) | 85 / 100 | **99 / 100** |
+| Maltese perplexity / English perplexity (forgetting) | 5.56 / 15.9 | 6.01 / 17.25 |
+
+Right language, by source:
+
+| source | expected | before | after |
+|---|---|---|---|
+| English questions (GSM8K, No Robots) | English | 24 / 29 | **29 / 29** |
+| Maltese → English translation | English | 0 / 10 | **10 / 10** |
+| English → Maltese translation | Maltese | 15 / 15 | 15 / 15 |
+| Maltese Alpaca questions | Maltese | 46 / 46 | 45 / 46 |
+
+Before SFT the model answered everything in Maltese, translation requests included; after it, it translates in
+both directions and answers English in English. The one real miss: asked to translate `Bongu` into French, it
+echoed it. (Three other Alpaca "misses" were right: English book titles, a JSON object, an answer too short for the
+language detector.)
+
+**A metric lesson.** The first table judged an answer's language against its *question*, and reported "answers
+in Maltese" falling from 100% to 76%: every correct Maltese → English translation counted as a failure, and the
+untrained model's habit of answering translation requests in Maltese counted as success. The report now judges
+against the language of the *reference* answer ("answers in the reference's language").
+
+**The cost:** about +8% perplexity in Maltese and English, much more than Hebrew's SFT (+0.25). If that matters,
+a gentler run (`-s sft_learning_rate=5e-5`) should roughly halve it.
+
+```bash
+CUDA_VISIBLE_DEVICES=1 lfm3-cpt -c examples/maltese.toml chat runs/mt-sft/sft/merged --temperature 0
+```
+
+Expect translationese (the Maltese training answers are machine-translated) and invented details.

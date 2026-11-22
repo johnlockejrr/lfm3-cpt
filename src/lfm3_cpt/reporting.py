@@ -155,8 +155,8 @@ def _get(block: dict[str, Any] | None, *keys: str) -> float | None:
 SFT_ROWS = (
     # label, path, format, lower_is_better (None: no colour)
     ("answer perplexity (held out)", ("answer", "perplexity"), ".2f", True),
-    ("answers in {language} (to {language} questions)", ("generation", "target_rate"), ".1%", False),
-    ("answers in the question's language", ("generation", "language_match"), ".1%", False),
+    ("answers in {language} (where the reference is)", ("generation", "target_rate"), ".1%", False),
+    ("answers in the reference's language", ("generation", "language_match"), ".1%", False),
     ("answers in English", ("generation", "english_rate"), ".1%", None),
     ("answers finished (EOS)", ("generation", "finished_rate"), ".1%", False),
     ("chrF vs reference", ("generation", "chrf"), ".1f", False),
