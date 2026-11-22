@@ -45,8 +45,9 @@ def taco_answer(output: str, language: str = "Maltese") -> str:
 
 # Machine translation detaches the apostrophe of Maltese elision: "ta 'kontroll", "jista 'jinkludi" for
 # "ta' kontroll", "jista' jinkludi". The elided words end in -a (ta', ma', jista', erba', terġa'), so only those
-# are joined back: "u 'Kif'" (and + an opening quote) stays as it is.
-_DETACHED_ELISION_RE = re.compile(r"\b(\w*[aA]) '(?=\w)")
+# are joined back: "u 'Kif'" (and + an opening quote) stays as it is, and so does the elided article 'il / 'l,
+# whose apostrophe rightly starts the word: "mexa 'il quddiem", "'l fuq".
+_DETACHED_ELISION_RE = re.compile(r"\b(\w*[aA]) '(?!(?:il|l)\b)(?=\w)")
 
 
 def repair_elision(text: str) -> str:

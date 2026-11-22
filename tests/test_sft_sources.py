@@ -106,5 +106,7 @@ def test_repair_elision():
     assert repair_elision("Tista 'tgħidli? erba 'snin, terġa 'tibda") == "Tista' tgħidli? erba' snin, terġa' tibda"
     assert repair_elision("u 'Kif inti?' qalli") == "u 'Kif inti?' qalli"  # an opening quote, not an elision
     assert repair_elision("ta' kontroll") == "ta' kontroll"  # already right
+    assert repair_elision("mexa 'il quddiem u tħares 'il fuq") == "mexa 'il quddiem u tħares 'il fuq"  # 'il: right
+    assert repair_elision("ħarsa 'l quddiem ta 'kuljum") == "ħarsa 'l quddiem ta' kuljum"
     rec = {"instruction": "Spjega", "input": "", "output": "Response in Maltese: Dan jista 'jgħin ta 'kuljum."}
     assert taco_messages(rec)["messages"][1]["content"] == "Dan jista' jgħin ta' kuljum."
